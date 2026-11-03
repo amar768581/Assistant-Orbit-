@@ -18,10 +18,24 @@ Repo: `amar768581/Assistant-Orbit-`
 | 1 | `PROGRESS.md` | Build tracker (this file) | ✅ done |
 | 2 | `config.py` | `.env` loading, API keys, assistant settings | ✅ done |
 | 3 | `.gitignore` | Keep `.env`, audio dumps and caches out of git | ✅ done |
-| 4 | `brain.py` | Gemini 2.5 Flash decision engine + Groq Llama-3 fallback, strict JSON | ⏳ pending |
+| 4 | `brain.py` | Gemini 2.5 Flash decision engine + Groq Llama-3 fallback, strict JSON | ✅ done |
 | 5 | `voice_engine.py` | Bengali TTS (edge-tts → mpv / termux-media-player → termux-tts-speak) + STT (termux-microphone-record → Groq Whisper) | ⏳ pending |
 | 6 | `requirements.txt` | Python dependencies | ⏳ pending |
 | 7 | `.env.example` | Template for keys and settings | ⏳ pending |
+
+### Phase 1 decisions on record
+
+- **Gemini via REST, not an SDK** — `requests` keeps Termux install light and avoids
+  `google-genai` version drift. `thinkingBudget: 0` keeps voice-loop latency low; if the
+  API rejects that field the request is retried without it.
+- **Model output is never trusted.** `brain.validate_decision()` whitelists the 13 actions,
+  coerces params (Bengali digits → ASCII, bool → `on`/`off`, volume clamped 0-100) and
+  rewrites unknown actions or missing recipients into a `speak` clarification, so a
+  hallucinated command can never reach `termux-*`.
+- **Degradation is silent to the caller**: Gemini error → Groq, bad JSON → one repair pass,
+  everything down → `speak` apology. `think()` always returns the 3-key contract.
+- Verified with a fake HTTP session (Gemini payload shape, Groq fallback, repair path,
+  13 param shapes); no live API keys are present in this build environment.
 
 ### Phase 1 contract (locked)
 
