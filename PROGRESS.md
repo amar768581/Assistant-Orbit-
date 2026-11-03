@@ -19,7 +19,7 @@ Repo: `amar768581/Assistant-Orbit-`
 | 2 | `config.py` | `.env` loading, API keys, assistant settings | ✅ done |
 | 3 | `.gitignore` | Keep `.env`, audio dumps and caches out of git | ✅ done |
 | 4 | `brain.py` | Gemini 2.5 Flash decision engine + Groq Llama-3 fallback, strict JSON | ✅ done |
-| 5 | `voice_engine.py` | Bengali TTS (edge-tts → mpv / termux-media-player → termux-tts-speak) + STT (termux-microphone-record → Groq Whisper) | ⏳ pending |
+| 5 | `voice_engine.py` | Bengali TTS (edge-tts → mpv / termux-media-player → termux-tts-speak) + STT (termux-microphone-record → Groq Whisper) | ✅ done |
 | 6 | `requirements.txt` | Python dependencies | ⏳ pending |
 | 7 | `.env.example` | Template for keys and settings | ⏳ pending |
 
@@ -36,6 +36,13 @@ Repo: `amar768581/Assistant-Orbit-`
   everything down → `speak` apology. `think()` always returns the 3-key contract.
 - Verified with a fake HTTP session (Gemini payload shape, Groq fallback, repair path,
   13 param shapes); no live API keys are present in this build environment.
+- **Voice verified for real** (not only mocked): `edge-tts` synthesised the Bengali test
+  line with both `bn-IN-BashkarNeural` and `bn-IN-TanishaaNeural` (~30 KB MP3, valid MPEG
+  frames). Playback and microphone paths stay untested until this runs on a real phone —
+  every missing binary must degrade to `termux-tts-speak` or a logged warning, never a crash.
+- Whisper requests are sent as `multipart/form-data` to `whisper-large-v3-turbo` with
+  `language=bn` (pass `language="auto"` for mixed Bengali/English audio) and a Bengali
+  prompt hint; 429/5xx retried twice, hard errors surface as `VoiceError`.
 
 ### Phase 1 contract (locked)
 
