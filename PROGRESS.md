@@ -17,7 +17,7 @@ Repo: `amar768581/Assistant-Orbit-`
 |---|------|---------|--------|
 | 1 | `PROGRESS.md` | Build tracker (this file) | ✅ done |
 | 2 | `config.py` | `.env` loading, API keys, assistant settings | ✅ done |
-| 3 | `.gitignore` | Keep `.env`, audio dumps and caches out of git | ⏳ pending |
+| 3 | `.gitignore` | Keep `.env`, audio dumps and caches out of git | ✅ done |
 | 4 | `brain.py` | Gemini 2.5 Flash decision engine + Groq Llama-3 fallback, strict JSON | ⏳ pending |
 | 5 | `voice_engine.py` | Bengali TTS (edge-tts → mpv / termux-media-player → termux-tts-speak) + STT (termux-microphone-record → Groq Whisper) | ⏳ pending |
 | 6 | `requirements.txt` | Python dependencies | ⏳ pending |

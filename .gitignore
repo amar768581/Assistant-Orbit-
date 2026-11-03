@@ -1,0 +1,42 @@
+# --- secrets ---------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- ORBIT runtime artifacts ----------------------------------------------
+audio/
+recordings/
+logs/
+*.log
+*.mp3
+*.wav
+*.m4a
+*.opus
+*.flac
+orbit_state.json
+.intruder/
+
+# --- Python ---------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+venv/
+env/
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- editors / OS ---------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+.DS_Store
