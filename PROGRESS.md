@@ -21,7 +21,9 @@ Repo: `amar768581/Assistant-Orbit-`
 | 4 | `brain.py` | Gemini 2.5 Flash decision engine + Groq Llama-3 fallback, strict JSON | ✅ done |
 | 5 | `voice_engine.py` | Bengali TTS (edge-tts → mpv / termux-media-player → termux-tts-speak) + STT (termux-microphone-record → Groq Whisper) | ✅ done |
 | 6 | `requirements.txt` | Python dependencies | ✅ done |
-| 7 | `.env.example` | Template for keys and settings | ⏳ pending |
+| 7 | `.env.example` | Template for keys and settings | ✅ done |
+
+**Phase 1 status: COMPLETE — 7/7 files committed and pushed to `main`.**
 
 ### Phase 1 decisions on record
 
@@ -60,6 +62,24 @@ Supported actions: `call`, `answer_call`, `sms`, `whatsapp`, `torch`, `battery`,
 `volume`, `wifi`, `intruder_check`, `open_app`, `read_screen`, `market_news`, `speak`.
 
 ---
+
+## Phase 1 quick start (Termux)
+
+```bash
+pkg install python mpv termux-api jq
+git clone https://github.com/amar768581/Assistant-Orbit-.git && cd Assistant-Orbit-
+pip install -r requirements.txt
+cp .env.example .env && nano .env        # GEMINI_API_KEY, GROQ_API_KEY
+
+python config.py                          # shows masked config + missing keys
+python brain.py "টর্চ জ্বালাও"              # -> {"action":"torch",...}
+python voice_engine.py                    # speaks a Bengali greeting
+python voice_engine.py --listen           # 6s mic -> Whisper transcript
+```
+
+Expected on a fresh phone: `python brain.py` prints the decision JSON plus the provider
+used (`gemini`, or `groq` when Gemini fails); `voice_engine.py` reports any missing
+Termux binary instead of crashing.
 
 ## Phase 2 — Termux Device Control (planned, not started)
 
