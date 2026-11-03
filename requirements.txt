@@ -1,0 +1,18 @@
+# ORBIT — Python dependencies (Termux: pkg install python mpv termux-api)
+# Install with:  pip install -r requirements.txt
+#
+# Android system binaries ORBIT relies on (not installable via pip):
+#   pkg install mpv termux-api          # playback + microphone + device control
+#   termux-setup-storage                # optional, only for saving photos/audio
+
+# HTTP client for the Gemini, Groq Whisper and Telegram REST APIs.
+requests>=2.31,<3
+
+# Loads .env. config.py still works without it (built-in fallback parser).
+python-dotenv>=1.0,<2
+
+# Natural Bengali neural TTS (bn-IN-BashkarNeural / bn-IN-TanishaaNeural).
+edge-tts>=6.1,<8
+
+# Optional, Phase 3 (Telegram bridge) — install when telegram_bot.py lands:
+# python-telegram-bot>=21,<23
