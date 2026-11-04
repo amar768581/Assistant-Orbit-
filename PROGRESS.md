@@ -81,12 +81,34 @@ Expected on a fresh phone: `python brain.py` prints the decision JSON plus the p
 used (`gemini`, or `groq` when Gemini fails); `voice_engine.py` reports any missing
 Termux binary instead of crashing.
 
-## Phase 2 — Termux Device Control (planned, not started)
+## Phase 2 — Device Hardware, Contacts & Security (Hour 2)
 
-- `actions.py` — dispatcher that executes the 13 actions via Termux:API
-  (`termux-telephony-call`, `termux-sms-send`, `termux-torch`, `termux-battery-status`,
-  `termux-volume`, `termux-wifi-connectioninfo`, `termux-camera-photo`, `am start`, ...)
-- `screen_reader.py` — `read_screen` via UI Automator dump / accessibility.
+| # | File | Purpose | Status |
+|---|------|---------|--------|
+| 1 | `system_control.py` | Torch, battery + low/full Bengali voice alerts, volume mapping, Wi-Fi, contact fuzzy-match | ✅ done |
+| 2 | `tests/test_system_control.py` | Unit tests with a fake subprocess runner | ⏳ pending |
+| 3 | `security_guard.py` | `intruder_check`: silent camera photo + GPS + Maps link + Bengali summary | ⏳ pending |
+| 4 | `tests/test_security_guard.py` | Unit tests with a fake subprocess runner | ⏳ pending |
+
+Still to come later: `actions.py` (dispatcher over all 13 actions), `screen_reader.py`
+(`read_screen` via UI Automator dump), `open_app`/`answer_call` helpers.
+
+### Phase 2 decisions on record
+
+- **One result shape everywhere**: every device call returns a JSON-serialisable dict
+  starting with `ok`, plus `error` when it failed — Telegram can forward it unchanged.
+- **Inputs are re-validated** in the device layer (state, level, stream, query) even
+  though `brain.validate_decision()` already normalised them.
+- **Volume is a percentage, not a stream step**: `0-100` maps onto the stream's advertised
+  `max_volume` from `termux-volume`; `direction` (`up`/`down`/`mute`/`unmute`) is also
+  supported because that is what `brain.py` emits for "ভলিউম বাড়াও".
+- **Contact matching survives script mismatch**: exact number (last 10 digits, so
+  `+880…` == `0…`) → exact name → substring → fuzzy score over both the transliterated
+  name and its consonant skeleton, so "rahim" still finds "রহিম". Contacts cached 5 min.
+- **Battery alerts are edge-triggered**: one alert when crossing <20% or reaching 100%,
+  suppressed for 30 min, state cleared when the battery recovers — a 5-minute monitor
+  must not nag every 5 minutes. The decision itself is the pure
+  `battery_alert_message()`, so it is testable without threads or a phone.
 
 ## Phase 3 — Telegram bridge + always-on service (planned, not started)
 
