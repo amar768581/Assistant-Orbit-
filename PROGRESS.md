@@ -87,8 +87,10 @@ Termux binary instead of crashing.
 |---|------|---------|--------|
 | 1 | `system_control.py` | Torch, battery + low/full Bengali voice alerts, volume mapping, Wi-Fi, contact fuzzy-match | ✅ done |
 | 2 | `tests/test_system_control.py` | Unit tests with a fake subprocess runner | ✅ done |
-| 3 | `security_guard.py` | `intruder_check`: silent camera photo + GPS + Maps link + Bengali summary | ⏳ pending |
+| 3 | `security_guard.py` | `intruder_check`: silent camera photo + GPS + Maps link + Bengali summary | ✅ done |
 | 4 | `tests/test_security_guard.py` | Unit tests with a fake subprocess runner | ⏳ pending |
+
+**Phase 2 status: 3/4 files done — 70 tests green** (`python -m unittest discover -s tests -t .`).
 
 Still to come later: `actions.py` (dispatcher over all 13 actions), `screen_reader.py`
 (`read_screen` via UI Automator dump), `open_app`/`answer_call` helpers.
@@ -113,7 +115,17 @@ Still to come later: `actions.py` (dispatcher over all 13 actions), `screen_read
   callable returning a `CommandResult`, so the suite needs no Termux binaries and no
   monkey-patching of the module. `run_command()` itself is tested with `mock.patch`
   (success, non-zero exit, timeout → 124, missing binary → 127).
-- 46 tests green: `python -m unittest discover -s tests -t .`
+- **One evidence package for `intruder_check`**: `{'ok', 'photo_path', 'camera', 'lat',
+  'lon', 'accuracy', 'provider', 'maps_url', 'timestamp', 'epoch', 'summary_bn',
+  'attempts'}` — JSON-serialisable so Phase 3 can post it to Telegram as a photo with
+  `summary_bn` as the caption and `maps_url` as the tappable location. `ok` is true when
+  *either* the photo or the fix succeeded; partial evidence still gets delivered.
+- **Front camera first** (`-c 1`), rear (`-c 0`) as fallback; a capture counts only if the
+  JPEG is ≥1 KB, so a permission-denied stub file can't masquerade as evidence. Small
+  files are deleted immediately. Photos go to `.intruder/` (already git-ignored).
+- **Location is network-then-GPS** with every attempt recorded; null markers, out-of-range
+  coordinates and unreadable JSON all fall through to the next provider instead of
+  producing a wrong pin. Summary wording distinguishes "not requested" from "failed".
 
 ## Phase 3 — Telegram bridge + always-on service (planned, not started)
 
