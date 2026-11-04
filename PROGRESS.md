@@ -88,9 +88,10 @@ Termux binary instead of crashing.
 | 1 | `system_control.py` | Torch, battery + low/full Bengali voice alerts, volume mapping, Wi-Fi, contact fuzzy-match | ✅ done |
 | 2 | `tests/test_system_control.py` | Unit tests with a fake subprocess runner | ✅ done |
 | 3 | `security_guard.py` | `intruder_check`: silent camera photo + GPS + Maps link + Bengali summary | ✅ done |
-| 4 | `tests/test_security_guard.py` | Unit tests with a fake subprocess runner | ⏳ pending |
+| 4 | `tests/test_security_guard.py` | Unit tests with a fake subprocess runner | ✅ done |
 
-**Phase 2 status: 3/4 files done — 70 tests green** (`python -m unittest discover -s tests -t .`).
+**Phase 2 status: COMPLETE — 4/4 files done, 70 tests green**
+(`python -m unittest discover -s tests -t .`).
 
 Still to come later: `actions.py` (dispatcher over all 13 actions), `screen_reader.py`
 (`read_screen` via UI Automator dump), `open_app`/`answer_call` helpers.
@@ -126,6 +127,10 @@ Still to come later: `actions.py` (dispatcher over all 13 actions), `screen_read
 - **Location is network-then-GPS** with every attempt recorded; null markers, out-of-range
   coordinates and unreadable JSON all fall through to the next provider instead of
   producing a wrong pin. Summary wording distinguishes "not requested" from "failed".
+- Security tests use a scripted runner that *writes the JPEG* Termux would have written,
+  so the ≥1 KB and fallback logic is exercised for real, plus a fixed clock so timestamps
+  and the Bengali `HH:MM` in the summary are deterministic. 70 tests total across both
+  modules — still green after every edit.
 
 ## Phase 3 — Telegram bridge + always-on service (planned, not started)
 
