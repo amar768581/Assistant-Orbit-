@@ -86,7 +86,7 @@ Termux binary instead of crashing.
 | # | File | Purpose | Status |
 |---|------|---------|--------|
 | 1 | `system_control.py` | Torch, battery + low/full Bengali voice alerts, volume mapping, Wi-Fi, contact fuzzy-match | ✅ done |
-| 2 | `tests/test_system_control.py` | Unit tests with a fake subprocess runner | ⏳ pending |
+| 2 | `tests/test_system_control.py` | Unit tests with a fake subprocess runner | ✅ done |
 | 3 | `security_guard.py` | `intruder_check`: silent camera photo + GPS + Maps link + Bengali summary | ⏳ pending |
 | 4 | `tests/test_security_guard.py` | Unit tests with a fake subprocess runner | ⏳ pending |
 
@@ -109,6 +109,11 @@ Still to come later: `actions.py` (dispatcher over all 13 actions), `screen_read
   suppressed for 30 min, state cleared when the battery recovers — a 5-minute monitor
   must not nag every 5 minutes. The decision itself is the pure
   `battery_alert_message()`, so it is testable without threads or a phone.
+- **Tests inject the runner, not `subprocess`**: `SystemControl(runner=...)` takes any
+  callable returning a `CommandResult`, so the suite needs no Termux binaries and no
+  monkey-patching of the module. `run_command()` itself is tested with `mock.patch`
+  (success, non-zero exit, timeout → 124, missing binary → 127).
+- 46 tests green: `python -m unittest discover -s tests -t .`
 
 ## Phase 3 — Telegram bridge + always-on service (planned, not started)
 
