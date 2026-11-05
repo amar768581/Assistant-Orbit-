@@ -138,8 +138,8 @@ Still to come later: `actions.py` (dispatcher over all 13 actions), `screen_read
 |---|------|---------|--------|
 | 1 | `memory_engine.py` | SQLite episodes/profile/self-upgrades/thinker-notes + daily self-upgrade | ✅ done |
 | 2 | `tests/test_memory_engine.py` | 27 tests: schema, extraction, context, daily upgrade | ✅ done |
-| 3 | `brain.py` (update) | "বস" persona guarantee, memory hook, Thinker Catalyst prompt | ⏳ pending |
-| 4 | `tests/test_brain.py` | Persona guard + memory integration tests | ⏳ pending |
+| 3 | `brain.py` (update) | "বস" persona guarantee, memory hook, Thinker Catalyst prompt | ✅ done |
+| 4 | `tests/test_brain.py` | Persona guard + memory integration tests | ✅ done |
 | 5 | `comm_manager.py` | `make_call` / `send_sms` via resolved contacts | ⏳ pending |
 | 6 | `tests/test_comm_manager.py` | Resolve + command-construction tests | ⏳ pending |
 | 7 | `call_receptionist.py` | Incoming-call watch, answer, Bengali greeting, STT reply, call log | ⏳ pending |
@@ -163,6 +163,18 @@ Still to come later: `actions.py` (dispatcher over all 13 actions), `screen_read
   Bengali vowel signs are non-word characters, so no `\b` anchors after Bengali words.
 - `daily_self_upgrade()` derives today's rule from failure counts / most-used action and
   one of six rotating Thinker Challenges (date-seeded, always ends with a question mark).
+- **Boss is unskippable and untouched by luck**: `ensure_boss_address()` runs at the end of
+  `validate_decision()` and only ever touches `reply_bn` — an existing "বস" survives
+  verbatim (so the model's warmth isn't flattened), otherwise a natural "বস, " prefix is
+  added. Action and params are identical to before, which keeps the 13-action contract and
+  all Phase 2 tests intact.
+- **Memory is optional and non-blocking**: `Brain(memory=...)` injects an engine,
+  `use_memory=False` opts out, otherwise the shared `memory_engine.get_memory()` is created
+  lazily. `learn_from_text` runs *before* the prompt so today's new fact is already usable,
+  `remember_turn` runs *after* the decision, and any memory exception is logged, never
+  raised — a locked DB cannot take the assistant down.
+- **Thinker Catalyst lives in the prompt, not the code**: ideas/strategy questions get one
+  sharp Bengali second-order insight; device commands do not, so "টর্চ জালাও" stays short.
 
 ## Phase 5 — Telegram bridge + always-on service (planned, not started)
 

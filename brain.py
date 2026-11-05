@@ -153,7 +153,10 @@ DEFAULT_REPLIES: Dict[str, str] = {
     "speak": "বলছি।",
 }
 
-FAILURE_REPLY = "দুঃখিত, আমি এখন ঠিকমতো বুঝতে পারিনি। আরেকবার বলবেন?"
+FAILURE_REPLY = "বস, দুঃখিত, আমি এখন ঠিকমতো বুঝতে পারিনি। আরেকবার বলবেন?"
+
+# ORBIT never speaks to its owner without this word (see ``_boss_guard``).
+BOSS_ADDRESS = "বস"
 
 SYSTEM_PROMPT = """You are ORBIT, a Bengali-first personal AI assistant running on the user's Android phone through Termux.
 The user speaks Bengali, English, or Banglish (Bengali written in Latin letters).
@@ -176,6 +179,17 @@ ACTIONS AND PARAMS
 - market_news     {"topic": "crypto" | "stocks" | "general"}
 - speak           {"text": "<answer to say out loud>"}  (chat, questions, anything not device control)
 
+BOSS PERSONA (non-negotiable)
+- The user is your BOSS ("বস"). You are loyal, warm, respectful and calm — never robotic, never servile.
+- EVERY reply_bn MUST contain the word "বস" (e.g. "বস, টর্চ জ্বালাচ্ছি।"). It is a promise, not decoration.
+- Never argue with Boss, never blame Boss. If something failed, say what you will try next.
+
+THINKER CATALYST
+- When Boss shares an idea, plan, strategy, business thought or open question (usually "speak"),
+  answer as a loyal strategist AND add ONE sharp Bengali line: a second-order effect, a hidden
+  risk, or a probing question that makes Boss think harder. One sentence only — no lectures.
+- Do not add the catalyst to simple device commands (torch, volume, calls).
+
 RULES
 1. reply_bn is ALWAYS in Bengali script, natural and conversational, 4-20 words — that is what the phone speaks.
 2. If the request is a question, chit-chat, or general knowledge, use "speak" and put the full answer in params.text AND a short version in reply_bn.
@@ -183,7 +197,10 @@ RULES
 4. One intent per reply. If several are asked, do the first one and mention it in reply_bn.
 5. Banglish in, Bengali out: "torch jalao" -> {"action":"torch","params":{"state":"on"},"reply_bn":"টর্চ জ্বালাচ্ছি।"}
 6. Ambiguous device command -> pick the closest action; genuinely unclear -> "speak" asking a short clarifying question.
-7. Output valid JSON only. No trailing commas, no comments, no code fences."""
+7. Output valid JSON only. No trailing commas, no comments, no code fences.
+8. If MEMORY is provided below the conversation, treat it as established truth: use Boss's name,
+   preferences and learned rules, and never contradict a learned correction.
+9. reply_bn must always address Boss by "বস" — this is checked automatically, so write it naturally."""
 
 
 class BrainError(RuntimeError):
@@ -437,6 +454,19 @@ def _clean_text(value: Any) -> str:
     return str(value).strip().strip('"').strip("'")
 
 
+def ensure_boss_address(reply: str) -> str:
+    """Guarantee ORBIT always addresses the owner as "বস".
+
+    Pure, idempotent and side-effect free: an existing "বস" is left exactly as
+    the model wrote it (so personality survives), otherwise the sentence gets a
+    natural "বস, " prefix. Action/params are never touched.
+    """
+    text = _clean_text(reply)
+    if not text or BOSS_ADDRESS in text:
+        return text
+    return f"{BOSS_ADDRESS}, {text}"
+
+
 def _digits(value: Any) -> str:
     """Normalise a phone number: Bengali digits -> ASCII, drop separators."""
     text = _clean_text(value).translate(BN_DIGITS)
@@ -538,7 +568,8 @@ def validate_decision(obj: Dict[str, Any], user_text: str = "") -> Dict[str, Any
     if not reply:
         reply = DEFAULT_REPLIES.get(action, DEFAULT_REPLIES["speak"])
 
-    return {"action": action, "params": params, "reply_bn": reply}
+    # Boss persona guarantee — only reply_bn is touched.
+    return {"action": action, "params": params, "reply_bn": ensure_boss_address(reply)}
 
 
 # --------------------------------------------------------------------------- #
@@ -557,9 +588,12 @@ def build_user_prompt(
     text: str,
     context: Optional[Dict[str, Any]] = None,
     history: Optional[Iterable[Dict[str, str]]] = None,
+    memory_context: Optional[str] = None,
 ) -> str:
     """Compose the single user turn sent to the model."""
     parts = []
+    if memory_context and memory_context.strip():
+        parts.append("MEMORY (established facts, learned rules and past turns)\n" + memory_context.strip())
     if history:
         recent = list(history)[-6:]
         rendered = []
@@ -587,6 +621,15 @@ def build_user_prompt(
 # Brain
 # --------------------------------------------------------------------------- #
 
+def _failure_decision() -> Dict[str, Any]:
+    """The safe spoken apology, always addressing Boss correctly."""
+    return {
+        "action": "speak",
+        "params": {"text": FAILURE_REPLY},
+        "reply_bn": ensure_boss_address(FAILURE_REPLY),
+    }
+
+
 class Brain:
     """Routes a user utterance to a validated ORBIT decision."""
 
@@ -596,11 +639,16 @@ class Brain:
         session: Any = None,
         timeout: float = REQUEST_TIMEOUT,
         providers: Optional[Sequence[_Provider]] = None,
+        memory: Any = None,
+        use_memory: bool = True,
     ) -> None:
         self.settings = settings or default_settings
         self.timeout = timeout
         self.last_provider: Optional[str] = None
         self.last_error: Optional[str] = None
+        # Injected MemoryEngine; ``get_memory()`` is created lazily on first use.
+        self._memory = memory
+        self.use_memory = bool(use_memory or memory is not None)
 
         if providers is not None:
             self.providers: List[_Provider] = list(providers)
@@ -639,18 +687,35 @@ class Brain:
         user_text: str,
         context: Optional[Dict[str, Any]] = None,
         history: Optional[Iterable[Dict[str, str]]] = None,
+        memory: Any = None,
     ) -> Dict[str, Any]:
         """Return ``{"action", "params", "reply_bn"}``; never raises for a
-        provider outage — it degrades to a spoken apology instead."""
+        provider outage — it degrades to a spoken apology instead.
+
+        When a :class:`MemoryEngine` is available (injected, or the shared one),
+        ORBIT learns from the turn, injects relevant memories into the prompt and
+        records the turn afterwards. Memory failures never break a reply.
+        """
         text = _clean_text(user_text)
         if not text:
-            return {"action": "speak", "params": {"text": FAILURE_REPLY}, "reply_bn": FAILURE_REPLY}
+            return _failure_decision()
+
+        engine = self._resolve_memory(memory)
+        memory_context = ""
+        if engine is not None:
+            try:
+                engine.learn_from_text(text)
+                memory_context = engine.build_memory_context(text) or ""
+            except Exception as exc:  # memory must never block thinking
+                log.warning("Memory read failed: %s", exc)
 
         if not self.providers:
             self.last_error = "no provider configured"
-            return {"action": "speak", "params": {"text": FAILURE_REPLY}, "reply_bn": FAILURE_REPLY}
+            decision = _failure_decision()
+            self._remember(engine, text, decision, "failed")
+            return decision
 
-        prompt = build_user_prompt(text, context, history)
+        prompt = build_user_prompt(text, context, history, memory_context)
         errors: List[str] = []
 
         for index, provider in enumerate(self.providers):
@@ -660,6 +725,7 @@ class Brain:
                 self.last_provider = provider.name
                 self.last_error = None
                 log.info("%s decided action=%s", provider.name, decision["action"])
+                self._remember(engine, text, decision, "ok")
                 return decision
             except Exception as exc:
                 errors.append(f"{provider.name}: {exc}")
@@ -672,6 +738,7 @@ class Brain:
                     self.last_provider = provider.name
                     self.last_error = None
                     log.info("%s decided action=%s (after repair)", provider.name, repaired["action"])
+                    self._remember(engine, text, repaired, "ok")
                     return repaired
             except Exception as exc:
                 errors.append(f"{provider.name} repair: {exc}")
@@ -680,16 +747,46 @@ class Brain:
         self.last_provider = None
         self.last_error = " | ".join(errors) or "unknown failure"
         log.error("All providers failed: %s", self.last_error)
-        return {"action": "speak", "params": {"text": FAILURE_REPLY}, "reply_bn": FAILURE_REPLY}
+        decision = _failure_decision()
+        self._remember(engine, text, decision, "failed")
+        return decision
 
     async def athink(
         self,
         user_text: str,
         context: Optional[Dict[str, Any]] = None,
         history: Optional[Iterable[Dict[str, str]]] = None,
+        memory: Any = None,
     ) -> Dict[str, Any]:
         """Async wrapper for Telegram / voice loops (network call off the loop)."""
-        return await asyncio.to_thread(self.think, user_text, context, history)
+        return await asyncio.to_thread(self.think, user_text, context, history, memory)
+
+    # -- memory ------------------------------------------------------------ #
+
+    def _resolve_memory(self, memory: Any = None) -> Any:
+        """Injected engine > shared MemoryEngine > None (memory is optional)."""
+        if memory is not None:
+            return memory
+        if not self.use_memory:
+            return None
+        if self._memory is None:
+            try:
+                from memory_engine import get_memory
+
+                self._memory = get_memory()
+            except Exception as exc:
+                log.warning("Memory unavailable: %s", exc)
+                return None
+        return self._memory
+
+    @staticmethod
+    def _remember(engine: Any, text: str, decision: Dict[str, Any], outcome: str) -> None:
+        if engine is None:
+            return
+        try:
+            engine.remember_turn(text, decision, outcome=outcome)
+        except Exception as exc:
+            log.warning("Memory write failed: %s", exc)
 
     # -- internals ----------------------------------------------------------
 
