@@ -140,8 +140,8 @@ Still to come later: `actions.py` (dispatcher over all 13 actions), `screen_read
 | 2 | `tests/test_memory_engine.py` | 27 tests: schema, extraction, context, daily upgrade | ✅ done |
 | 3 | `brain.py` (update) | "বস" persona guarantee, memory hook, Thinker Catalyst prompt | ✅ done |
 | 4 | `tests/test_brain.py` | Persona guard + memory integration tests | ✅ done |
-| 5 | `comm_manager.py` | `make_call` / `send_sms` via resolved contacts | ⏳ pending |
-| 6 | `tests/test_comm_manager.py` | Resolve + command-construction tests | ⏳ pending |
+| 5 | `comm_manager.py` | `make_call` / `send_sms` via resolved contacts | ✅ done |
+| 6 | `tests/test_comm_manager.py` | Resolve + command-construction tests | ✅ done |
 | 7 | `call_receptionist.py` | Incoming-call watch, answer, Bengali greeting, STT reply, call log | ⏳ pending |
 | 8 | `tests/test_call_receptionist.py` | dumpsys parsing + full reception flow tests | ⏳ pending |
 
@@ -175,6 +175,13 @@ Still to come later: `actions.py` (dispatcher over all 13 actions), `screen_read
   raised — a locked DB cannot take the assistant down.
 - **Thinker Catalyst lives in the prompt, not the code**: ideas/strategy questions get one
   sharp Bengali second-order insight; device commands do not, so "টর্চ জালাও" stays short.
+- **Commander never invents a number**: `make_call`/`send_sms` always go through
+  `resolve_contact()`, so `+880…`/`0…`, Bengali digits and fuzzy names behave exactly like
+  the rest of the assistant; an unresolved name returns an error dict and *no* dial command
+  is issued. A spoken number wins over the address book, and the exact number string is
+  what reaches `termux-telephony-call` / `termux-sms-send -n`.
+- SMS refuses an empty body before touching the radio ("মেসেজে কী লিখব বলবেন?"), and both
+  paths return `message_bn` so the caller can speak the outcome without re-deriving it.
 
 ## Phase 5 — Telegram bridge + always-on service (planned, not started)
 
