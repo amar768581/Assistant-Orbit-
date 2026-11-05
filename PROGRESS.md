@@ -132,7 +132,39 @@ Still to come later: `actions.py` (dispatcher over all 13 actions), `screen_read
   and the Bengali `HH:MM` in the summary are deterministic. 70 tests total across both
   modules — still green after every edit.
 
-## Phase 3 — Telegram bridge + always-on service (planned, not started)
+## Phase 3 — Memory, Boss/Thinker Persona, Communication (Hour 3)
+
+| # | File | Purpose | Status |
+|---|------|---------|--------|
+| 1 | `memory_engine.py` | SQLite episodes/profile/self-upgrades/thinker-notes + daily self-upgrade | ✅ done |
+| 2 | `tests/test_memory_engine.py` | 27 tests: schema, extraction, context, daily upgrade | ✅ done |
+| 3 | `brain.py` (update) | "বস" persona guarantee, memory hook, Thinker Catalyst prompt | ⏳ pending |
+| 4 | `tests/test_brain.py` | Persona guard + memory integration tests | ⏳ pending |
+| 5 | `comm_manager.py` | `make_call` / `send_sms` via resolved contacts | ⏳ pending |
+| 6 | `tests/test_comm_manager.py` | Resolve + command-construction tests | ⏳ pending |
+| 7 | `call_receptionist.py` | Incoming-call watch, answer, Bengali greeting, STT reply, call log | ⏳ pending |
+| 8 | `tests/test_call_receptionist.py` | dumpsys parsing + full reception flow tests | ⏳ pending |
+
+### Phase 3 decisions on record
+
+- **Four tables, one file**: `episodes` (every turn), `boss_profile` (facts), `self_upgrades`
+  (rules/lessons) and `thinker_notes` (daily challenge). `rule_key` is UNIQUE so re-learning
+  the same lesson updates instead of duplicating; Bengali keys are hashed into a stable
+  `bn_<sha1>` slug so SQL and logs stay readable.
+- **DB path is configurable**: `~/.orbit/orbit_memory.db` by default, overridable with
+  `ORBIT_MEMORY_DB`, `Settings.memory_db` or `MemoryEngine(db_path=...)` — tests always use
+  a temp file, so the suite never touches the real memory.
+- **Memory never breaks the assistant**: a missing/unwritable DB marks `ok=False`, every
+  method returns an error dict instead of raising, and `build_memory_context()` returns `""`
+  so the brain prompt simply has no memory section.
+- **Learning is deterministic first**: regex extraction of name/preferences/family/habits/
+  goals/projects/corrections in Bengali, English and Banglish; an optional `llm_callable`
+  only *sharpens* the daily rule and always falls back to the deterministic one.
+  Bengali vowel signs are non-word characters, so no `\b` anchors after Bengali words.
+- `daily_self_upgrade()` derives today's rule from failure counts / most-used action and
+  one of six rotating Thinker Challenges (date-seeded, always ends with a question mark).
+
+## Phase 5 — Telegram bridge + always-on service (planned, not started)
 
 - `telegram_bot.py` — admin-only long polling, voice notes in/out, inline confirmation.
 - `main.py` — wake-lock loop, hotword → STT → brain → dispatch → TTS.

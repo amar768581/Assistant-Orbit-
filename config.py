@@ -169,6 +169,8 @@ class Settings:
 
     # --- runtime details (kept here so callers never re-read os.environ) ---
     env_path: Path = field(default=ENV_PATH, repr=False)
+    # Long-term memory database (override with ORBIT_MEMORY_DB or the ctor).
+    memory_db: Path = field(default_factory=lambda: Path.home() / ".orbit" / "orbit_memory.db")
 
     # -- helpers ------------------------------------------------------------
 
@@ -202,6 +204,7 @@ class Settings:
             "name": self.name,
             "language": self.language,
             "wake_lock": self.wake_lock,
+            "MEMORY_DB": str(self.memory_db),
         }
 
 
@@ -218,6 +221,9 @@ def _build_settings(env_file: str = str(ENV_PATH), override: bool = False) -> Se
         language=_env_str("ASSISTANT_LANGUAGE", "bn-IN") or "bn-IN",
         wake_lock=_env_bool("WAKE_LOCK", True),
         env_path=Path(env_file),
+        memory_db=Path(
+            _env_str("ORBIT_MEMORY_DB") or (Path.home() / ".orbit" / "orbit_memory.db")
+        ).expanduser(),
     )
     return settings
 
