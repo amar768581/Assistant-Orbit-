@@ -174,6 +174,13 @@ class TestLearning(MemoryCase):
         self.assertEqual(keys["goal"]["category"], "goal")
         self.assertEqual(keys["project"]["value"], "অরবিট")
 
+    def test_role_contacts(self):
+        self.mem.learn_from_text("আমার ম্যানেজারের নাম সাব্বির")
+        self.mem.learn_from_text("my doctor's name is Karim Ahmed")
+        keys = {f["key"]: f["value"] for f in self.mem.profile()}
+        self.assertEqual(keys["manager_name"], "সাব্বির")
+        self.assertEqual(keys["doctor_name"], "Karim Ahmed")
+
     def test_building_pattern(self):
         self.mem.learn_from_text("আমি একটা অ্যাপ বানাচ্ছি")
         project = [f for f in self.mem.profile() if f["category"] == "project"]
