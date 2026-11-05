@@ -142,8 +142,11 @@ Still to come later: `actions.py` (dispatcher over all 13 actions), `screen_read
 | 4 | `tests/test_brain.py` | Persona guard + memory integration tests | ✅ done |
 | 5 | `comm_manager.py` | `make_call` / `send_sms` via resolved contacts | ✅ done |
 | 6 | `tests/test_comm_manager.py` | Resolve + command-construction tests | ✅ done |
-| 7 | `call_receptionist.py` | Incoming-call watch, answer, Bengali greeting, STT reply, call log | ⏳ pending |
-| 8 | `tests/test_call_receptionist.py` | dumpsys parsing + full reception flow tests | ⏳ pending |
+| 7 | `call_receptionist.py` | Incoming-call watch, answer, Bengali greeting, STT reply, call log | ✅ done |
+| 8 | `tests/test_call_receptionist.py` | dumpsys parsing + full reception flow tests | ✅ done |
+
+**Phase 3 status: COMPLETE — 8/8 files done, 156 tests green**
+(`python -m unittest discover -s tests -t .`).
 
 ### Phase 3 decisions on record
 
@@ -182,6 +185,29 @@ Still to come later: `actions.py` (dispatcher over all 13 actions), `screen_read
   what reaches `termux-telephony-call` / `termux-sms-send -n`.
 - SMS refuses an empty body before touching the radio ("মেসেজে কী লিখব বলবেন?"), and both
   paths return `message_bn` so the caller can speak the outcome without re-deriving it.
+- **Reception is a state machine over dumpsys, not a blocking dialer**: `monitor_once()` is a
+  single poll (`mCallState=1` ringing, `=2` offhook, `=0` idle). The ring timer starts on the
+  first ringing sighting, resets on idle *and* on a different caller, so a cancelled call or a
+  second caller never inherits an old timer. Answer when `ring_seconds` (default 8s) elapses
+  or `auto_reception` is on.
+- **Answer = KEYCODE_CALL (5)** then best-effort speaker routing (HEADSET_PLUG broadcast, then
+  HEADSETHOOK 79). Speaker control is ROM-dependent, so failures are recorded in
+  `speaker.attempts` and never block the greeting or the call itself.
+- **The receptionist degrades in layers**: no brain -> a polite Bengali holding line; no mic or
+  a failed recording -> ask again and still log the call; TTS/STT/memory exceptions are logged
+  and swallowed. `receive()` always returns `{ok, caller, transcript, transcript_text,
+  summary_bn, speaker}` so "কে কল করেছিল?" is answerable from memory later.
+- Reception is logged through `memory.remember_turn` with `action="call_reception"` and
+  `outcome="incoming_call"`, which means the existing `build_memory_context()` surfaces it to
+  the brain without a new table.
+
+### Phase 3 runtime prerequisites (on the phone)
+
+- `adb` reachable from Termux (Android 11+: `pkg install android-tools` + Wireless debugging
+  pairing). `dumpsys`/`input` need the paired device; without it `current_call()` reports the
+  adb error and never pretends a call was answered.
+- `termux-api` permissions for `termux-telephony-call` / `termux-sms-send`, plus microphone for
+  STT. Speaker routing during calls is attempted, not guaranteed.
 
 ## Phase 5 — Telegram bridge + always-on service (planned, not started)
 
