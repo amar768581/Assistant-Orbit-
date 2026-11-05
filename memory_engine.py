@@ -365,7 +365,8 @@ class MemoryEngine:
         re.IGNORECASE,
     )
     _RELATION_RE = re.compile(
-        rf"(?:আমার|my)\s+(স্ত্রী|মা|বাবা|ছেলে|মেয়ে|ভাই|বোন|wife|mother|father|son|daughter|brother|sister)"
+        rf"(?:আমার|my)\s+(স্ত্রী|মা|বাবা|ছেলে|মেয়ে|ভাই|বোন|ম্যানেজার|বস|স্যার|ডাক্তার|সহকর্মী|"
+        rf"wife|mother|father|son|daughter|brother|sister|manager|boss|sir|doctor|colleague)"
         rf"(?:য়ের|ের|র|এর|'s)?\s*(?:নাম|name)\s*(?:হলো|is)?\s*[:\-]?\s*([^\n।,.;!?]{{2,40}})",
         re.IGNORECASE,
     )
@@ -397,6 +398,9 @@ class MemoryEngine:
         "মেয়ে": "daughter", "ভাই": "brother", "বোন": "sister",
         "wife": "wife", "mother": "mother", "father": "father", "son": "son",
         "daughter": "daughter", "brother": "brother", "sister": "sister",
+        "ম্যানেজার": "manager", "বস": "boss", "স্যার": "sir", "ডাক্তার": "doctor",
+        "সহকর্মী": "colleague", "manager": "manager", "boss": "boss", "sir": "sir",
+        "doctor": "doctor", "colleague": "colleague",
     }
 
     def learn_from_text(self, user_text: str) -> Dict[str, Any]:
