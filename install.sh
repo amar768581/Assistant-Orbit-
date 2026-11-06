@@ -69,6 +69,16 @@ else
   echo "    TELEGRAM_BOT_TOKEN and ADMIN_CHAT_ID:  nano .env"
 fi
 
+say "Banking & OTP guardrail"
+cat <<'EOF'
+    Always on — no configuration needed:
+      • banking / UPI / wallet / trading apps are never opened or logged into
+      • screen reading refuses bank apps and FLAG_SECURE windows
+      • OTP, PIN, CVV, password and bank alerts are never stored, logged or replied to
+      • Telegram refuses such commands before the brain sees them
+    Verify any time:  python main.py doctor   (look for "Banking Security Lock")
+EOF
+
 say "Checking Termux:API app permissions (manual, one time)"
 cat <<'EOF'
     Install the "Termux:API" app from F-Droid, then allow:
