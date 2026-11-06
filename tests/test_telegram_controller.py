@@ -313,6 +313,32 @@ class TestText(TelegramCase):
         self.assertEqual(self.dispatcher.texts, [])
         self.assertTrue(self.sent())
 
+    def test_otp_from_boss_is_refused_before_dispatch(self):
+        result = self.controller.handle_update(message("আমার OTP 445566 মনে রাখো"))
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["kind"], "blocked")
+        self.assertEqual(self.dispatcher.texts, [])
+        self.assertIn("ওটিপি", result["reply_bn"])
+        self.assertIn(result["reply_bn"], self.sent())
+
+    def test_bank_app_request_is_refused_before_dispatch(self):
+        for text in ("SBI YONO খোলো", "PhonePe দিয়ে টাকা পাঠাও", "ব্যাংক অ্যাপে লগইন করো"):
+            with self.subTest(text=text):
+                result = self.controller.handle_text(text, 42)
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["kind"], "blocked")
+                self.assertIn("ব্যাংকিং", result["reply_bn"])
+        self.assertEqual(self.dispatcher.texts, [])
+
+    def test_voice_transcript_with_a_secret_is_refused(self):
+        self.voice.transcript = "আমার পিন ১২৩৪ মনে রাখো"
+        result = self.controller.handle_update(message(voice={"file_id": "v-9"}))
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["kind"], "voice")
+        self.assertEqual(self.dispatcher.texts, [])
+
     def test_voice_note_is_downloaded_transcribed_and_dispatched(self):
         result = self.controller.handle_update(
             message(voice={"file_id": "v-1", "duration": 4})
@@ -394,6 +420,8 @@ class TestCommands(TelegramCase):
         self.assertIn("১২", reply)
         self.assertIn("সার্ভিস", reply)
         self.assertIn("Telegram", reply)
+        self.assertIn("ব্যাংকিং লক", reply)
+        self.assertIn("OTP", reply)
 
     def test_status_survives_broken_modules(self):
         controller = self.make(control=FakeControl(ok=False))
