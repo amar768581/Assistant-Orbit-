@@ -41,6 +41,17 @@ from urllib.parse import quote
 
 from brain import GEMINI_MODEL, GEMINI_URL, ensure_boss_address
 from config import settings as default_settings
+from security_policy import (
+    BANKING_REFUSAL_BN,
+    BLOCKED_FINANCIAL_APPS,
+    BLOCKED_PACKAGES,
+    SCREEN_REFUSAL_BN,
+    SECRET_REFUSAL_BN,
+    contains_secret,
+    evaluate_screen,
+    financial_app_block,
+    is_financial_target,
+)
 from system_control import CommandResult, SystemControl, normalise_number, run_command
 
 try:  # requests is optional at import time so a bare interpreter still loads.
@@ -309,7 +320,13 @@ class AdbAutomation:
         return plans
 
     def open_app(self, app_name: str) -> Dict[str, Any]:
-        """Launch a known app by Bengali, English or package name."""
+        """Launch a known app — never a bank, UPI, wallet or trading app."""
+        wanted = str(app_name or "").strip()
+        if is_financial_target(wanted):
+            self.last_error = "banking_app_blocked"
+            log.warning("Refused financial app launch: %r", wanted)
+            return financial_app_block(wanted)
+
         key = self.resolve_app(app_name)
         if key is None:
             wanted = str(app_name or "").strip() or "?"
@@ -322,6 +339,11 @@ class AdbAutomation:
             )
 
         info = APPS[key]
+        if is_financial_target(info.get("package")) or is_financial_target(info.get("name_bn")):
+            self.last_error = "banking_app_blocked"
+            log.warning("Refused financial app launch via key %s (%s)", key, info.get("package"))
+            return financial_app_block(wanted or info.get("name_bn") or key)
+
         attempts: List[Dict[str, Any]] = []
         for cmd in self._launch_plan(key):
             result = self._run(cmd, timeout=self.timeout)
@@ -438,6 +460,19 @@ class AdbAutomation:
             )
 
         body = str(message or "").strip()
+        if contains_secret(body):
+            self.last_error = "secret_message_blocked"
+            log.warning("Refused WhatsApp message containing a secret")
+            return {
+                "ok": False,
+                "action": "whatsapp",
+                "error": "secret_message_blocked",
+                "blocked": True,
+                "name": (resolved.get("name") or phone).strip(),
+                "reply_bn": SECRET_REFUSAL_BN,
+                "message_bn": SECRET_REFUSAL_BN,
+            }
+
         url = self._whatsapp_url(phone, body)
         opened = self._open_url(url)
         name = (resolved.get("name") or phone).strip()
@@ -592,8 +627,44 @@ class AdbAutomation:
 
         return self._fail(last_error, "read_screen")
 
+    def screen_guard(self) -> Dict[str, Any]:
+        """Inspect the focused window before any screenshot is taken.
+
+        Fail-closed: if ``dumpsys window`` cannot be read, the focused package
+        cannot be parsed, ``FLAG_SECURE`` is set or the app is financial, the
+        returned dict has ``blocked=True`` and a Bengali ``reply_bn``.
+        """
+        result = self._run(self._adb("shell", "dumpsys", "window"), timeout=min(self.timeout, 15.0))
+        if not result.ok:
+            info = evaluate_screen("", unavailable=True)
+            info["error"] = result.describe()
+            log.warning("Screen guard unavailable: %s", info["error"])
+            return info
+        info = evaluate_screen(result.output)
+        if info.get("blocked"):
+            log.warning(
+                "Screen guard blocked capture (package=%s reason=%s)",
+                info.get("package"), info.get("reason"),
+            )
+        return info
+
     def read_screen(self, prompt_bn: str = VISION_PROMPT_BN) -> Dict[str, Any]:
-        """Screenshot the phone and describe it in Bengali for Boss."""
+        """Screenshot the phone and describe it — unless a protected window is open."""
+        guard = self.screen_guard()
+        if guard.get("blocked"):
+            self.last_error = "banking_screen_blocked"
+            return {
+                "ok": False,
+                "action": "read_screen",
+                "error": "banking_screen_blocked",
+                "blocked": True,
+                "reason": guard.get("reason"),
+                "package": guard.get("package"),
+                "secure": bool(guard.get("secure")),
+                "description_bn": "",
+                "reply_bn": SCREEN_REFUSAL_BN,
+            }
+
         shot = self.screenshot()
         if not shot.get("ok"):
             return {

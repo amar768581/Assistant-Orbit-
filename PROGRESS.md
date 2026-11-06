@@ -393,8 +393,8 @@ environment (a real phone with Termux:API, wireless ADB, mpv and live API keys).
 |---|------|---------|--------|
 | 1 | `security_policy.py` | One source of truth: blocked apps/packages, OTP/PIN/bank-alert patterns, screen guard, refusals | ✅ done |
 | 2 | `tests/test_security_policy.py` | 25 tests: bank names/packages, secrets, alerts, FLAG_SECURE | ✅ done |
-| 3 | `adb_automation.py` | Refuse banking `open_app`; `read_screen` checks foreground + FLAG_SECURE (fail-closed) | ⏳ pending |
-| 4 | `tests/test_adb_automation.py` | Blocked-launch and screen-guard tests | ⏳ pending |
+| 3 | `adb_automation.py` | Refuse banking `open_app`; `read_screen` checks foreground + FLAG_SECURE (fail-closed) | ✅ done |
+| 4 | `tests/test_adb_automation.py` | 38 tests: blocked launches, screen guard, secret WhatsApp | ✅ done |
 | 5 | `brain.py` | `validate_decision()` turns financial login / PIN-OTP entry into a `speak` refusal | ⏳ pending |
 | 6 | `tests/test_brain.py` | Model tries to open a bank / send an OTP → refusal | ⏳ pending |
 | 7 | `notification_responder.py` | Never lists, logs or auto-replies to OTP/PIN/bank notifications | ⏳ pending |
@@ -426,6 +426,16 @@ environment (a real phone with Termux:API, wireless ADB, mpv and live API keys).
   code`, `cvv`, `pin`, `password`, `passcode`; `ওটিপি`, `পিন`, `পাসওয়ার্ড`, `গোপন কোড`,
   `ভেরিফিকেশন কোড`; bank alerts add `debited`, `credited`, `a/c`, `neft`, `imps`, `upi`,
   `available balance`, `ডেবিট`, `ক্রেডিট`, `লেনদেন`, `ব্যালেন্স`.
+- **`open_app` refuses before resolving or touching adb**: the raw name *and* the resolved
+  `APPS` package are both checked, so `SBI YONO`, `com.phonepe.app`, `Angel One` (which is
+  in the launch table) and an unknown `com.example.mobilebanking` all return
+  `{ok: False, error: "banking_app_blocked"}` with **zero** runner calls.
+- **`read_screen` inspects the window first**: `adb shell dumpsys window` → focused package
+  + `FLAG_SECURE`; a financial app, a secure window, an unreadable dumpsys or an unparseable
+  focus all return `banking_screen_blocked` *before* `screencap`, so no PNG is written,
+  uploaded or described. The guard result is also exposed as `screen_guard()` for `doctor`.
+- **`send_whatsapp` is a second line of defence**: a message containing an OTP/PIN/password
+  is refused (`secret_message_blocked`) before the deep link is built.
 
 ## Known environment notes
 
