@@ -209,6 +209,42 @@ Still to come later: `actions.py` (dispatcher over all 13 actions), `screen_read
 - `termux-api` permissions for `termux-telephony-call` / `termux-sms-send`, plus microphone for
   STT. Speaker routing during calls is attempted, not guaranteed.
 
+## Phase 4 — UI Automation, Notifications, Briefing, Dispatcher (Hour 4)
+
+| # | File | Purpose | Status |
+|---|------|---------|--------|
+| 1 | `adb_automation.py` | `open_app` (Bengali/English aliases), WhatsApp deep link, `read_screen` via Gemini vision | ✅ done |
+| 2 | `tests/test_adb_automation.py` | 31 tests: app table, number normalisation, links, vision | ✅ done |
+| 3 | `notification_responder.py` | Read/filter/dedupe notifications, log to memory, auto-reply | ⏳ pending |
+| 4 | `tests/test_notification_responder.py` | Fake notification list + reply routing tests | ⏳ pending |
+| 5 | `briefing_agent.py` | `market_news`: world news RSS + Nifty snapshot + Bengali Thinker brief | ⏳ pending |
+| 6 | `tests/test_briefing_agent.py` | Fake RSS/HTTP, deterministic fallback tests | ⏳ pending |
+| 7 | `actions.py` | `ActionDispatcher` over all 13 actions + speak + memory | ⏳ pending |
+| 8 | `tests/test_actions.py` | Dispatch table, failure and speak tests | ⏳ pending |
+
+### Phase 4 decisions on record
+
+- **ADB is a runner, never a global**: `AdbAutomation(runner=...)` mirrors `SystemControl`,
+  so app launching, the WhatsApp intent and the screenshot pull are all exercised with a
+  fake in CI. `adb` missing simply fails the plan.
+- **`monkey` lies about success.** It exits 0 even when the package does not exist, so a
+  launch counts only when its output has no "No activities found" / "monkey aborted".
+  Each app has a fallback chain (monkey → `am start -n` → alternative packages → intent),
+  and the winning command is returned in `detail` with every attempt recorded.
+- **App names are matched, not guessed**: Bengali, Banglish and English aliases map onto a
+  small table (YouTube, WhatsApp, Facebook, Telegram, Chrome, Camera, Settings, Clock,
+  Angel One), noise words like "অ্যাপটা খোলো" are stripped, direct package names work, and
+  an unknown app returns the available Bengali names instead of opening the wrong app.
+- **WhatsApp numbers are normalised, never invented**: `01712345678` -> `+8801712345678`,
+  `9876543210` -> `+919876543210`, `+…` preserved; the link drops the `+` for
+  `api.whatsapp.com` and percent-encodes the Bengali body. ADB `VIEW` first,
+  `termux-open-url` as the fallback. `press_send` taps known coordinates when given,
+  otherwise attempts KEYCODE_ENTER and reports that the human may still need to press send.
+- **Screen reading is vision-first with honest failure**: `screencap` → `adb pull` → verify
+  PNG magic and ≥1 KB → base64 → Gemini 2.5 Flash `inline_data`. A tiny/corrupt file is
+  deleted and never sent; the temp screenshot is removed after the call unless
+  `keep_screenshot=True`.
+
 ## Phase 5 — Telegram bridge + always-on service (planned, not started)
 
 - `telegram_bot.py` — admin-only long polling, voice notes in/out, inline confirmation.
