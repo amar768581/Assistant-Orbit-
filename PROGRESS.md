@@ -215,8 +215,8 @@ Still to come later: `actions.py` (dispatcher over all 13 actions), `screen_read
 |---|------|---------|--------|
 | 1 | `adb_automation.py` | `open_app` (Bengali/English aliases), WhatsApp deep link, `read_screen` via Gemini vision | ✅ done |
 | 2 | `tests/test_adb_automation.py` | 31 tests: app table, number normalisation, links, vision | ✅ done |
-| 3 | `notification_responder.py` | Read/filter/dedupe notifications, log to memory, auto-reply | ⏳ pending |
-| 4 | `tests/test_notification_responder.py` | Fake notification list + reply routing tests | ⏳ pending |
+| 3 | `notification_responder.py` | Read/filter/dedupe notifications, log to memory, auto-reply | ✅ done |
+| 4 | `tests/test_notification_responder.py` | 32 tests: parsing, dedupe, memory, reply channels, inline tap | ✅ done |
 | 5 | `briefing_agent.py` | `market_news`: world news RSS + Nifty snapshot + Bengali Thinker brief | ⏳ pending |
 | 6 | `tests/test_briefing_agent.py` | Fake RSS/HTTP, deterministic fallback tests | ⏳ pending |
 | 7 | `actions.py` | `ActionDispatcher` over all 13 actions + speak + memory | ⏳ pending |
@@ -244,6 +244,26 @@ Still to come later: `actions.py` (dispatcher over all 13 actions), `screen_read
   PNG magic and ≥1 KB → base64 → Gemini 2.5 Flash `inline_data`. A tiny/corrupt file is
   deleted and never sent; the temp screenshot is removed after the call unless
   `keep_screenshot=True`.
+- **Notification identity is the Termux `key`**, then `package:id`, then a
+  package+title+text+time hash — so a second poll is silent, an edited notification that
+  keeps its key is *not* re-announced, and a genuinely new message with the same text still
+  counts. The seen list is bounded (`seen_limit`, default 200) and in memory only.
+- **Only messaging packages are acted on**: WhatsApp (incl. Business), Telegram,
+  Telegram X and the common Messages packages (AOSP, Google, Samsung, OnePlus, MIUI), plus
+  anything advertising category `msg`. A Chrome download never enters memory or a reply.
+- **Memory text is written for retrieval, not for logs**: each notification becomes
+  "হোয়াটসঅ্যাপ থেকে রহিম লিখেছেন: …" with `action="notification"` and
+  `outcome="notification"`, so `build_memory_context("হোয়াটসঅ্যাপে কে মেসেজ দিয়েছে")`
+  matches on both the app and the sender.
+- **Bengali can't be typed into another app over ADB** (`input text` mangles it), so the
+  real send path is the WhatsApp deep link (`press_send` taps known coordinates or tries
+  KEYCODE_ENTER) and `termux-sms-send`. The ADB inline-reply (expand shade → uiautomator dump
+  → tap the "Reply" node → type → Enter) exists for plain-ASCII text and is **opt-in**
+  (`use_inline=True`); it falls through to the channel path when it fails.
+- **Auto-reply never invents an answer**: with no brain, a brain failure or an empty draft,
+  the message is reported as `needs_manual` and nothing is sent. Drafts are Bengali, the
+  "বস, " prefix is stripped (Boss is the sender, not the recipient) and capped at 320 chars.
+  Telegram has no reply API in this stack, so it is always `needs_manual` with the app named.
 
 ## Phase 5 — Telegram bridge + always-on service (planned, not started)
 
