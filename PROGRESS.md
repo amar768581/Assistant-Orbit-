@@ -305,8 +305,8 @@ goes through Gemini vision instead.
 |---|------|---------|--------|
 | 1 | `telegram_controller.py` | Admin-only Bot API long polling, voice notes, commands, proactive pushes | ✅ done |
 | 2 | `tests/test_telegram_controller.py` | 42 tests: security gate, commands, media, polling, chunking | ✅ done |
-| 3 | `main.py` | Wake-lock, 5-thread supervisor, CLI (`daemon`/`once`/`voice`/`briefing`/`doctor`) | ⏳ pending |
-| 4 | `tests/test_main.py` | Supervisor/CLI/wake-lock/doctor tests with fakes | ⏳ pending |
+| 3 | `main.py` | Wake-lock, 5-thread supervisor, CLI (`daemon`/`once`/`voice`/`briefing`/`doctor`) | ✅ done |
+| 4 | `tests/test_main.py` | 35 tests: wake-lock, supervisor, ticks, CLI, doctor | ✅ done |
 | 5 | `install.sh` | Idempotent Termux installer + tests + doctor | ⏳ pending |
 | 6 | `README.md` | Bengali + English setup/architecture/permissions guide | ⏳ pending |
 
@@ -342,6 +342,32 @@ goes through Gemini vision instead.
 - **Push helpers are thread-safe by construction**: `notify_boss`, `send_intruder_alert` and
   `send_call_summary` only read settings and call the session, so the battery, reception and
   notification threads can message Boss without touching the poll loop.
+- **Supervision is explicit, not magic**: each of the five services owns a `Service` record
+  (`thread`, `stop` event, `runs`, `restarts`, `last_error`). A crashed target restarts with a
+  capped backoff; a target that returns by itself is *finished*, not restarted. `stop_all()`
+  sets every stop event and joins, so Ctrl+C cannot leave a dialer thread behind.
+- **Every loop is `tick()` + wait**: `battery_tick`, `reception_tick`, `notifications_tick` and
+  `daily_tick` are public, synchronous and testable without threads or real sleeps; the loop
+  wrappers only add the stop-event wait. This is what lets 35 tests cover the daemon in 15 ms.
+- **Pushes are edge-triggered and de-duplicated**: battery only when `alert_message_bn` is
+  present (the existing 30-minute cooldown still applies), reception only while
+  `auto_reception` is on and only once per answered-call signature, notifications only when
+  there are new messages (top 5 + reply count). Silence is the default, not a heartbeat.
+- **The daily job is idempotent per date** (`last_daily`), runs self-upgrade + briefing,
+  pushes the combined Bengali message and speaks the briefing. `force=True` exists for
+  `/briefing`-style manual runs. An in-process guard is deliberate: the phone process is
+  restarted rarely, and memory's `daily_*` rule key already de-duplicates the learning.
+- **Wake-lock is idempotent and always released**: `termux-wake-lock` once on `start()`,
+  `termux-wake-unlock` on `shutdown()`, which is wired to SIGINT, SIGTERM *and* `atexit`.
+  `WAKE_LOCK=false` skips it entirely; a missing binary degrades to a warning.
+- **The Telegram service is skipped, not crashed, when unconfigured**: `start_all()` records
+  `skipped: TELEGRAM_BOT_TOKEN / ADMIN_CHAT_ID missing`, and `/status` shows the truth.
+- **CLI is one entry point**: no args = `daemon`; `once` prints the Bengali reply (plus full
+  JSON with `--json`) and exits 1 on failure; `voice` records once, dispatches and speaks;
+  `briefing` speaks the morning brief; `doctor` prints a ✅/⚠️/❌ table and only exits 1 with
+  `--strict`. `doctor` checks both keys, `.env`, the SQLite DB, Python, eight Termux:API
+  binaries and `adb devices` — readiness means AI + memory + Python, warnings are optional
+  extras (Telegram, ADB, individual binaries).
 
 ## Known environment notes
 
