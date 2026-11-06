@@ -36,10 +36,19 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from adb_automation import AdbAutomation
 from comm_manager import CommManager
+from security_policy import (
+    BLOCKED_FINANCIAL_APPS,
+    BLOCKED_PACKAGES,
+    NOTIFICATION_REFUSAL_BN,
+    SECRET_REFUSAL_BN,
+    contains_secret,
+    is_sensitive_notification,
+)
 from config import settings as default_settings
 from system_control import CommandResult, SystemControl, run_command, to_bengali_digits
 
 log = logging.getLogger("orbit.notifications")
+_logger = log  # poll(log=...) shadows ``log``; keep a module-level handle
 
 NOTIFICATION_TIMEOUT = 20.0
 DEFAULT_ADB = ("adb", "shell")
@@ -234,8 +243,16 @@ class NotificationResponder:
         """Store each message as an episode so Boss can ask about it later."""
         logged: List[Dict[str, Any]] = []
         failed: List[str] = []
+        skipped = 0
 
         for message in messages:
+            if is_sensitive_notification(message):
+                skipped += 1
+                log.warning(
+                    "Not logging sensitive notification from %s (OTP/PIN/bank)",
+                    message.get("package"),
+                )
+                continue
             summary_bn = self.describe_message(message)
             user_text = summary_bn
             decision = {
@@ -257,7 +274,13 @@ class NotificationResponder:
                 log.warning("Could not log notification to memory: %s", exc)
                 failed.append(str(exc))
 
-        return {"ok": True, "logged": logged, "count": len(logged), "errors": failed}
+        return {
+            "ok": True,
+            "logged": logged,
+            "count": len(logged),
+            "errors": failed,
+            "skipped": skipped,
+        }
 
     @staticmethod
     def describe_message(message: Dict[str, Any]) -> str:
@@ -293,6 +316,7 @@ class NotificationResponder:
             }
 
         fresh: List[Dict[str, Any]] = []
+        blocked = 0
         for item in listing["notifications"]:
             if not self.is_messaging(item):
                 continue
@@ -300,6 +324,13 @@ class NotificationResponder:
             if key in self._seen:
                 continue
             self._mark_seen(key)
+            if is_sensitive_notification(item):
+                blocked += 1
+                _logger.warning(
+                    "Ignored financial/OTP notification from %s — not logged, not answered",
+                    item.get("package"),
+                )
+                continue
             fresh.append(self._message(item))
 
         logged = self.log_messages(fresh) if (fresh and log) else {"ok": True, "logged": [], "count": 0, "errors": []}
@@ -336,6 +367,7 @@ class NotificationResponder:
             "logged": logged.get("logged", []),
             "replies": replies,
             "auto_reply": wanted,
+            "blocked": blocked,
             "summary_bn": summary_bn,
         }
 
@@ -345,6 +377,13 @@ class NotificationResponder:
 
     def compose_reply(self, message: Dict[str, Any]) -> Dict[str, Any]:
         """Ask the brain for a short Bengali reply in Boss's voice."""
+        if is_sensitive_notification(message):
+            log.warning("Refused to draft a reply to a financial/OTP notification")
+            return {
+                "ok": False,
+                "error": "sensitive_notification_blocked",
+                "reply_bn": NOTIFICATION_REFUSAL_BN,
+            }
         if self.brain is None:
             return self._fail("no brain available for auto-reply", "notifications")
         prompt = REPLY_PROMPT.format(
@@ -395,7 +434,26 @@ class NotificationResponder:
         generate: bool = False,
     ) -> Dict[str, Any]:
         """Send a reply on the same channel the message arrived on."""
+        if is_sensitive_notification(message):
+            return {
+                "ok": False,
+                "action": "reply",
+                "error": "sensitive_notification_blocked",
+                "message_key": message.get("key"),
+                "reply_bn": NOTIFICATION_REFUSAL_BN,
+                "message_bn": NOTIFICATION_REFUSAL_BN,
+            }
+
         body = str(text or "").strip()
+        if contains_secret(body):
+            return {
+                "ok": False,
+                "action": "reply",
+                "error": "secret_message_blocked",
+                "message_key": message.get("key"),
+                "reply_bn": SECRET_REFUSAL_BN,
+                "message_bn": SECRET_REFUSAL_BN,
+            }
         if not body and generate:
             drafted = self.compose_reply(message)
             if not drafted.get("ok"):

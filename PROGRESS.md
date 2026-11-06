@@ -397,8 +397,8 @@ environment (a real phone with Termux:API, wireless ADB, mpv and live API keys).
 | 4 | `tests/test_adb_automation.py` | 38 tests: blocked launches, screen guard, secret WhatsApp | ✅ done |
 | 5 | `brain.py` | `validate_decision()` turns financial login / PIN-OTP entry into a `speak` refusal | ✅ done |
 | 6 | `tests/test_brain.py` | 26 tests: bank app, OTP SMS, PIN text, normal actions untouched | ✅ done |
-| 7 | `notification_responder.py` | Never lists, logs or auto-replies to OTP/PIN/bank notifications | ⏳ pending |
-| 8 | `tests/test_notification_responder.py` | Sensitive notifications filtered end-to-end | ⏳ pending |
+| 7 | `notification_responder.py` | Never lists, logs or auto-replies to OTP/PIN/bank notifications | ✅ done |
+| 8 | `tests/test_notification_responder.py` | 40 tests: blocked before memory/brain/reply, dedupe of blocked | ✅ done |
 | 9 | `memory_engine.py` | `remember_turn` / `learn_from_text` refuse to persist secrets and bank alerts | ⏳ pending |
 | 10 | `tests/test_memory_engine.py` | Nothing sensitive reaches SQLite | ⏳ pending |
 | 11 | `telegram_controller.py` | Pre-dispatch OTP/bank refusal + lock line in `/status` | ⏳ pending |
@@ -442,6 +442,12 @@ environment (a real phone with Termux:API, wireless ADB, mpv and live API keys).
   financial becomes `{action: "speak", params: {"text": refusal}, reply_bn: refusal}` — the
   refusal is spoken, never the model's optimistic "খুলছি" line. Normal torch/call/SMS paths
   are untouched, and the policy names are re-exported from `brain` for `doctor`.
+- **Sensitive notifications stop at the door**: `poll()` checks the package (financial) and
+  the whole title/content blob (OTP/PIN/password/bank alert) *after* dedupe, marks it seen,
+  increments `blocked`, and never adds it to `new_messages`. That single point protects
+  memory logging, brain prompting and auto-reply simultaneously; `log_messages`, 
+  `compose_reply` and `reply_to` each re-check so a direct call cannot bypass it. Reply text
+  containing a secret is refused even for a normal message (`secret_message_blocked`).
 
 ## Known environment notes
 
