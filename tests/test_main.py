@@ -466,6 +466,11 @@ class TestDoctor(unittest.TestCase):
         labels = [row["label"] for row in report["rows"]]
         self.assertIn("ADB", labels)
         self.assertIn("GEMINI_API_KEY", labels)
+        self.assertIn("Banking Security Lock", labels)
+        lock = next(row for row in report["rows"] if row["label"] == "Banking Security Lock")
+        self.assertEqual(lock["status"], "ok")
+        self.assertIn("OTP", lock["value"])
+        self.assertIn("ব্লকড", lock["value"])
 
     def test_missing_everything_is_not_ready(self):
         settings = FakeSettings()
