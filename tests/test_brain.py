@@ -117,6 +117,78 @@ class TestBossPersona(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------- #
+# Financial & secret guard
+# --------------------------------------------------------------------------- #
+
+class TestFinancialGuard(unittest.TestCase):
+    def blocked(self, decision, user_text=""):
+        result = validate_decision(decision, user_text)
+        self.assertEqual(result["action"], "speak")
+        self.assertIn(BOSS_ADDRESS, result["reply_bn"])
+        self.assertEqual(result["reply_bn"], result["params"].get("text"))
+        return result
+
+    def test_bank_app_launch_becomes_a_speak_refusal(self):
+        for target in ("SBI YONO", "com.phonepe.app", "Google Pay", "Angel One", "ব্যাংক অ্যাপ"):
+            with self.subTest(target=target):
+                result = self.blocked(
+                    {"action": "open_app", "params": {"app": target}, "reply_bn": "বস, খুলছি।"},
+                    f"{target} খোলো",
+                )
+                self.assertEqual(result["reply_bn"], brain.BANKING_REFUSAL_BN)
+                self.assertIn("ব্যাংকিং", result["reply_bn"])
+                self.assertNotIn("খুলছি", result["reply_bn"])
+
+    def test_financial_request_cannot_use_a_different_app(self):
+        result = self.blocked(
+            {"action": "open_app", "params": {"app": "settings"}, "reply_bn": "বস, সেটিংস খুলছি।"},
+            "SBI YONO দিয়ে ব্যালেন্স দেখো",
+        )
+        self.assertEqual(result["reply_bn"], brain.BANKING_REFUSAL_BN)
+
+    def test_sms_with_otp_is_refused(self):
+        result = self.blocked({
+            "action": "sms",
+            "params": {"contact": "রহিম", "message": "আমার OTP ৪৪৫৫৬৬"},
+            "reply_bn": "বস, SMS পাঠাচ্ছি।",
+        })
+        self.assertEqual(result["reply_bn"], brain.SECRET_REFUSAL_BN)
+        self.assertIn("ওটিপি", result["reply_bn"])
+
+    def test_whatsapp_with_password_is_refused(self):
+        result = self.blocked({
+            "action": "whatsapp",
+            "params": {"contact": "রহিম", "message": "password is hunter2"},
+        })
+        self.assertEqual(result["reply_bn"], brain.SECRET_REFUSAL_BN)
+
+    def test_pin_in_user_text_blocks_open_app(self):
+        result = self.blocked(
+            {"action": "open_app", "params": {"app": "chrome"}},
+            "আমার PIN ১২৩৪ কোথায় লিখব?",
+        )
+        self.assertEqual(result["reply_bn"], brain.SECRET_REFUSAL_BN)
+
+    def test_normal_actions_are_untouched(self):
+        self.assertEqual(
+            validate_decision({"action": "torch", "params": {"state": "on"}}, "টর্চ জালাও")["action"],
+            "torch",
+        )
+        sms = validate_decision({
+            "action": "sms",
+            "params": {"contact": "রহিম", "message": "আসছি"},
+        }, "রহিমকে SMS দাও আসছি")
+        self.assertEqual(sms["action"], "sms")
+        self.assertEqual(sms["params"]["message"], "আসছি")
+        call = validate_decision({"action": "call", "params": {"contact": "রহিম"}}, "রহিমকে কল দাও")
+        self.assertEqual(call["action"], "call")
+
+    def test_guard_constants_are_reexported(self):
+        self.assertIn("com.phonepe.app", brain.BLOCKED_PACKAGES)
+        self.assertIn("sbi yono", brain.BLOCKED_FINANCIAL_APPS)
+
+
+# --------------------------------------------------------------------------- #
 # Prompt building
 # --------------------------------------------------------------------------- #
 
