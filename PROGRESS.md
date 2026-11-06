@@ -402,7 +402,7 @@ environment (a real phone with Termux:API, wireless ADB, mpv and live API keys).
 | 9 | `memory_engine.py` | `remember_turn` / `learn_from_text` refuse to persist secrets and bank alerts | ✅ done |
 | 10 | `tests/test_memory_engine.py` | 36 tests: OTP turn, bank alert, fact, rule all skipped | ✅ done |
 | 11 | `telegram_controller.py` | Pre-dispatch OTP/bank refusal + lock line in `/status` | ✅ done |
-| 12 | `main.py` + tests | `doctor` shows the Banking Security Lock row | ⏳ pending |
+| 12 | `main.py` + tests | `doctor` shows the Banking Security Lock row | ✅ done |
 | 13 | `install.sh` + `README.md` | Document and surface the guardrail | ⏳ pending |
 
 ### Security decisions on record
@@ -457,6 +457,9 @@ environment (a real phone with Termux:API, wireless ADB, mpv and live API keys).
   or a financial request and answers with the refusal without calling `dispatcher.process`
   at all (defence in depth if the brain were replaced). `/status` now shows the live
   banking-lock summary (`security_report()`: app/package counts + OTP/screen protection).
+- **`doctor` proves the lock is on**: a `Banking Security Lock` row always reports ✅ plus
+  the live counts (26 apps / 37 packages at build time), OTP guard and screen guard. It is
+  not a static string — it calls `security_report()`, so a broken import/list would show.
 
 ## Known environment notes
 

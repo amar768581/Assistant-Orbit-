@@ -43,6 +43,7 @@ from config import settings as default_settings
 from memory_engine import MemoryEngine, get_memory
 from notification_responder import NotificationResponder
 from security_guard import SecurityGuard
+from security_policy import security_report
 from system_control import CommandResult, SystemControl, run_command, which_binary, to_bengali_digits
 from telegram_controller import TelegramController
 from voice_engine import VoiceEngine
@@ -564,6 +565,9 @@ def doctor_report(
 
     python_ok = sys.version_info >= (3, 9)
     row("Python", f"{platform.python_version()}", "ok" if python_ok else "fail")
+
+    lock = security_report()
+    row("Banking Security Lock", lock["label_bn"], "ok" if lock.get("enabled") else "fail")
 
     for binary in TERMUX_BINARIES:
         found = bool(which(binary))
