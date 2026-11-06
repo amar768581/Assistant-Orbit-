@@ -217,8 +217,8 @@ Still to come later: `actions.py` (dispatcher over all 13 actions), `screen_read
 | 2 | `tests/test_adb_automation.py` | 31 tests: app table, number normalisation, links, vision | ✅ done |
 | 3 | `notification_responder.py` | Read/filter/dedupe notifications, log to memory, auto-reply | ✅ done |
 | 4 | `tests/test_notification_responder.py` | 32 tests: parsing, dedupe, memory, reply channels, inline tap | ✅ done |
-| 5 | `briefing_agent.py` | `market_news`: world news RSS + Nifty snapshot + Bengali Thinker brief | ⏳ pending |
-| 6 | `tests/test_briefing_agent.py` | Fake RSS/HTTP, deterministic fallback tests | ⏳ pending |
+| 5 | `briefing_agent.py` | `market_news`: world news RSS + Nifty snapshot + Bengali Thinker brief | ✅ done |
+| 6 | `tests/test_briefing_agent.py` | 23 tests: RSS, quotes, LLM path, fallbacks | ✅ done |
 | 7 | `actions.py` | `ActionDispatcher` over all 13 actions + speak + memory | ⏳ pending |
 | 8 | `tests/test_actions.py` | Dispatch table, failure and speak tests | ⏳ pending |
 
@@ -264,6 +264,19 @@ Still to come later: `actions.py` (dispatcher over all 13 actions), `screen_read
   the message is reported as `needs_manual` and nothing is sent. Drafts are Bengali, the
   "বস, " prefix is stripped (Boss is the sender, not the recipient) and capped at 320 chars.
   Telegram has no reply API in this stack, so it is always `needs_manual` with the app named.
+- **Briefing survives half the internet being down**: three RSS feeds (Google News World,
+  BBC World, Google News Business) are merged and de-duplicated by normalised title; a dead
+  feed only lands in `errors`. Markets use the Yahoo chart endpoint for NIFTY 50 and NIFTY
+  MIDCAP 50, reading `regularMarketPrice`/`chartPreviousClose` with a close-series fallback.
+  The brief is `ok` when *either* news or markets arrived; only both failing is an error.
+- **The summary is Bengali-first, the numbers are Bengali**: prices and percentages go
+  through `to_bengali_digits`, market direction is spoken as "বেড়েছে/কমেছে", and the
+  brief always starts with "বস".
+- **The Thinker line is appended by code, not requested from the model** — direction-based
+  (up / down / flat), always exactly one sentence, so it cannot be dropped by a lazy LLM or
+  duplicated when the fallback runs. The LLM only writes the 3–4 sentence factual body; if
+  there is no key, a quota error or an empty answer, a deterministic Bengali body is built
+  from the same headlines and market line, and `llm_used` says which happened.
 
 ## Phase 5 — Telegram bridge + always-on service (planned, not started)
 
