@@ -37,6 +37,13 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from config import settings as default_settings
+from security_policy import (
+    BLOCKED_FINANCIAL_APPS,
+    BLOCKED_PACKAGES,
+    SENSITIVE_SKIP_BN,
+    contains_secret,
+    is_sensitive_text,
+)
 
 log = logging.getLogger("orbit.memory")
 
@@ -190,12 +197,19 @@ class MemoryEngine:
     # Facts
     # ------------------------------------------------------------------ #
 
+    @staticmethod
+    def _sensitive_skip() -> Dict[str, Any]:
+        return {"ok": True, "skipped": "sensitive", "message_bn": SENSITIVE_SKIP_BN}
+
     def remember_fact(self, key: str, value: str, category: str = "general") -> Dict[str, Any]:
         """Insert/update one durable fact about Boss."""
         fact_key = _slug(key)
         fact_value = _clean(value)
         if not fact_value:
             return self._fail("empty fact value", key=key)
+        if is_sensitive_text(fact_value) or is_sensitive_text(str(key).replace("_", " ")):
+            log.warning("Refused to store a fact containing a secret/bank alert")
+            return {**self._sensitive_skip(), "key": fact_key}
         if self._conn is None:
             return self._fail(self.last_error or "memory unavailable", key=fact_key)
 
@@ -247,6 +261,9 @@ class MemoryEngine:
         text = _clean(rule_text)[:TEXT_LIMIT]
         if not text:
             return self._fail("empty rule text")
+        if is_sensitive_text(text) or is_sensitive_text(str(rule_key).replace("_", " ")):
+            log.warning("Refused to store a rule containing a secret/bank alert")
+            return {**self._sensitive_skip(), "rule_key": None}
         key = _slug(rule_key)[:64] or f"rule_{_slug(text)}"
         stamp = self._stamp()
         with self._lock, self._conn:
@@ -281,6 +298,11 @@ class MemoryEngine:
         said = _clean(user_text)[:TEXT_LIMIT]
         if not isinstance(decision, dict):
             decision = {}
+        if is_sensitive_text(said) or is_sensitive_text(
+            json.dumps(decision, ensure_ascii=False, default=str)
+        ):
+            log.warning("Refused to remember a turn containing a secret/bank alert")
+            return {**self._sensitive_skip(), "episode_id": None}
         action = _clean(decision.get("action")) or "speak"
         reply = _clean(decision.get("reply_bn"))[:TEXT_LIMIT]
         try:
@@ -408,6 +430,14 @@ class MemoryEngine:
         text = _clean(user_text)
         if not text:
             return {"ok": False, "error": "empty text", "facts": [], "rules": []}
+        if is_sensitive_text(text):
+            log.warning("Refused to learn from a text containing a secret/bank alert")
+            return {
+                **self._sensitive_skip(),
+                "facts": [],
+                "rules": [],
+                "learned": False,
+            }
         if self._conn is None:
             return self._fail(self.last_error or "memory unavailable", facts=[], rules=[])
 

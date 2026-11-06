@@ -399,8 +399,8 @@ environment (a real phone with Termux:API, wireless ADB, mpv and live API keys).
 | 6 | `tests/test_brain.py` | 26 tests: bank app, OTP SMS, PIN text, normal actions untouched | ✅ done |
 | 7 | `notification_responder.py` | Never lists, logs or auto-replies to OTP/PIN/bank notifications | ✅ done |
 | 8 | `tests/test_notification_responder.py` | 40 tests: blocked before memory/brain/reply, dedupe of blocked | ✅ done |
-| 9 | `memory_engine.py` | `remember_turn` / `learn_from_text` refuse to persist secrets and bank alerts | ⏳ pending |
-| 10 | `tests/test_memory_engine.py` | Nothing sensitive reaches SQLite | ⏳ pending |
+| 9 | `memory_engine.py` | `remember_turn` / `learn_from_text` refuse to persist secrets and bank alerts | ✅ done |
+| 10 | `tests/test_memory_engine.py` | 36 tests: OTP turn, bank alert, fact, rule all skipped | ✅ done |
 | 11 | `telegram_controller.py` | Pre-dispatch OTP/bank refusal + lock line in `/status` | ⏳ pending |
 | 12 | `main.py` + tests | `doctor` shows the Banking Security Lock row | ⏳ pending |
 | 13 | `install.sh` + `README.md` | Document and surface the guardrail | ⏳ pending |
@@ -448,6 +448,11 @@ environment (a real phone with Termux:API, wireless ADB, mpv and live API keys).
   memory logging, brain prompting and auto-reply simultaneously; `log_messages`, 
   `compose_reply` and `reply_to` each re-check so a direct call cannot bypass it. Reply text
   containing a secret is refused even for a normal message (`secret_message_blocked`).
+- **Memory is the last line of defence**: `remember_turn` inspects the user text *and* the
+  serialised decision (params + reply), `learn_from_text` the raw text, `remember_fact` the
+  key/value and `add_rule` the rule text/key. A hit returns `{ok: True, skipped: "sensitive"}`
+  and writes **nothing** — no episode, no profile fact, no rule. The caller still gets a
+  normal `ok` so a sensitive notification can neither crash a poll nor teach ORBIT a secret.
 
 ## Known environment notes
 
