@@ -7,8 +7,9 @@ answers as **“বস”** — with long-term memory, a daily Thinker challenge
 market/world briefing, and a **Boss-only Telegram bridge** so you can command
 your phone from anywhere.
 
-> **Status:** all 5 phases complete — 353 unit tests green. See
-> [`PROGRESS.md`](PROGRESS.md) for the decisions behind every module.
+> **Status:** all 5 phases complete — 411 unit tests green, plus a non-bypassable
+> **Financial & OTP Security Guardrail** that no module can skip.
+> See [`PROGRESS.md`](PROGRESS.md) for the decisions behind every module.
 
 ---
 
@@ -28,6 +29,7 @@ your phone from anywhere.
 | 📊 ব্রিফিং | নিফটি ৫০ + মিডক্যাপ + বিশ্বের খবর, বাংলা সংখ্যায় |
 | 🧠 মেমোরি | বসের নাম, পছন্দ, অভ্যাস, কাজ — SQLite-এ স্থানীয়ভাবে |
 | 📲 টেলিগ্রাম | দূর থেকে কমান্ড, ভয়েস নোট, ছবি, রিপোর্ট (শুধু বস) |
+| 🔒 ব্যাংকিং সুরক্ষা | ব্যাংক/UPI/ওয়ালেট অ্যাপ, পিন, ওটিপি, ব্যাংক SMS — কখনোই নয় |
 
 ### যেভাবে কাজ করে
 
@@ -103,6 +105,25 @@ python main.py doctor                # ✅/⚠️/❌ রিপোর্ট
 টেলিগ্রামে শুধু `ADMIN_CHAT_ID`-র চ্যাট কাজ করে; অন্য কেউ লিখলে একবার
 ভদ্রভাবে না বলে লগে `SECURITY` সতর্কতা রাখা হয়, কোনো কাজ চলে না।
 
+### 🔒 ব্যাংকিং ও OTP নিরাপত্তা (স্বয়ংক্রিয়, বন্ধ করা যায় না)
+
+Orbit কখনো আপনার টাকা বা গোপন তথ্যের কাছে যায় না — এটি কনফিগ ছাড়াই সবসময় চালু:
+
+- **ব্যাংক/UPI/ওয়ালেট/ট্রেডিং অ্যাপ খোলে না, লগইন করে না** — SBI YONO, HDFC,
+  ICICI, Axis, Kotak, PNB, BoB, Google Pay/Tez, PhonePe, Paytm, BHIM, Amazon Pay,
+  CRED, Angel One, Zerodha, Groww, PayPal ইত্যাদি; নামে `bank`/`upi`/`pay`/`wallet`/
+  `netbanking`/`finance` থাকলেও ব্লক।
+- **স্ক্রিন পড়া বন্ধ** — ফোরগ্রাউন্ডে ব্যাংকিং অ্যাপ বা `FLAG_SECURE` থাকলে ছবিই
+  তোলা হয় না (dumpsys পড়তে না পারলেও বন্ধ — fail-closed)।
+- **OTP/PIN/CVV/পাসওয়ার্ড** — পড়া হয় না, মনে রাখা হয় না, SMS/হোয়াটসঅ্যাপে
+  পাঠানো হয় না, অটো-রিপ্লাইও হয় না।
+- **ব্যাংক অ্যালার্ট** (`debited`, `credited`, `a/c`, `ব্যালেন্স`) — নোটিফিকেশন
+  স্ক্যানেই বাদ, SQLite-এ কিছুই জমা হয় না।
+- **টেলিগ্রাম** এমন কমান্ড Brain-এ পৌঁছানোর আগেই বাংলায় না বলে দেয়।
+
+যাচাই করুন: `python main.py doctor` → **Banking Security Lock** সারি, অথবা
+টেলিগ্রামে `/status`।
+
 ### Termux:API অনুমতি (একবার)
 
 F-Droid থেকে **Termux:API** অ্যাপ ইনস্টল করে Android Settings → Apps →
@@ -175,6 +196,8 @@ Wi-Fi বদলালে আবার `adb connect` করতে হবে। US
 | ব্যাটারি সেভার থামিয়ে দেয় | Termux + Termux:API কে “Unrestricted” করুন |
 | Gemini 429 | Groq স্বয়ংক্রিয় fallback; কী ও কোটা দেখুন |
 | WhatsApp মেসেজ লেখা হয়, send হয় না | ফোনের ROM intent সীমিত — কীবোর্ড Enter/সেন্ড বোতাম দিন |
+| ব্যাংক অ্যাপ খুলতে বললে খোলে না | এটাই ডিজাইন — নিরাপত্তা লক কখনো বন্ধ হয় না |
+| OTP মনে রাখতে বললে রাখে না | ইচ্ছাকৃত — গোপন তথ্য কখনো সংরক্ষণ করা হয় না |
 
 ---
 
@@ -198,6 +221,9 @@ phone can be commanded remotely.
    a desktop with fakes.
 4. Every reply addresses Boss (`ensure_boss_address`) and failures are spoken
    honestly, not as a false success.
+5. Financial safety is not a prompt: bank/UPI/wallet/trading apps, permission
+   screens and OTP/PIN/bank-alert text are blocked in code at every layer
+   (decision, ADB, notifications, memory, Telegram).
 
 ### Architecture
 
@@ -232,11 +258,12 @@ Voice / CLI / Telegram
 | `adb_automation.py` | open apps, WhatsApp deep links, screenshot → Gemini vision |
 | `notification_responder.py` | read/dedupe/log notifications, optional auto-reply |
 | `briefing_agent.py` | world news + NIFTY snapshots + Thinker insight |
+| `security_policy.py` | blocked financial apps/packages, OTP & bank-alert patterns, screen guard, refusals |
 | `actions.py` | the single dispatch table, speaks and records outcomes |
 | `telegram_controller.py` | Boss-only bot, voice notes, commands, push helpers |
 | `main.py` | wake-lock, five supervised threads, CLI, `doctor` |
 | `install.sh` | idempotent Termux setup |
-| `tests/` | 353 tests, no phone required |
+| `tests/` | 411 tests, no phone required |
 
 ### Requirements
 
@@ -322,6 +349,24 @@ may be refused by the OS; that failure is reported, not hidden.
   `~/.termux/boot/orbit.sh` containing
   `cd ~/Assistant-Orbit- && python main.py daemon --no-cli`.
 
+### Financial & secret guardrail
+
+Non-bypassable and on by default — no setting turns it off.
+
+| Layer | What it refuses |
+|---|---|
+| `brain.validate_decision` | opening a bank/UPI/wallet/trading app; sending an OTP/PIN/password; a financial request mapped to any `open_app` |
+| `adb_automation.open_app` | 26 financial apps / 37 packages plus keyword packages (`bank`, `upi`, `pay`, `wallet`, `netbanking`, `finance`, `broking`) |
+| `adb_automation.read_screen` | financial foreground app, `FLAG_SECURE`, unreadable/unparseable `dumpsys window` — **before** `screencap` (fail-closed) |
+| `notification_responder` | OTP/PIN/CVV/password/verification codes and `debited`/`credited`/`a/c`/UPI/balance alerts — never listed, logged, stored or auto-replied |
+| `memory_engine` | sensitive turns, facts and rules are not written to SQLite (`skipped: sensitive`) |
+| `telegram_controller` | secret/financial Boss messages are refused before the dispatcher runs |
+
+Every refusal is Bengali, starts with **বস**, and explains why. Verify with
+`python main.py doctor` (the **Banking Security Lock** row) or `/status` in Telegram.
+Edge cases are tested in [`tests/test_security_policy.py`](tests/test_security_policy.py)
+and in each module's suite.
+
 ### Security model
 
 - Secrets live only in `.env` (mode 600, git-ignored); logs mask them.
@@ -337,7 +382,7 @@ may be refused by the OS; that failure is reported, not hidden.
 
 ```bash
 python -m unittest discover -s tests -t .
-# Ran 353 tests ... OK
+# Ran 411 tests ... OK
 ```
 
 Tests use fake runners, fake HTTP sessions, fake bots and temporary SQLite
@@ -366,7 +411,8 @@ paths — no Termux binary, API key or phone required.
 | 3 | Memory, Boss/Thinker persona, comms, receptionist | ✅ |
 | 4 | ADB automation, notifications, briefing, dispatcher | ✅ |
 | 5 | Telegram bridge, daemon/CLI, installer, docs | ✅ |
+| 🔒 | Financial & OTP Security Guardrail (all layers) | ✅ |
 
-**353 tests · 5/5 phases · built one file at a time, every checkpoint pushed.**
+**411 tests · 5/5 phases + guardrail · built one file at a time, every checkpoint pushed.**
 
 Personal project — use it, fork it, teach it your own rules.

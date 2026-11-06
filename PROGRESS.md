@@ -310,12 +310,12 @@ goes through Gemini vision instead.
 | 5 | `install.sh` | Idempotent Termux installer + tests + doctor | ✅ done |
 | 6 | `README.md` | Bengali + English setup/architecture/permissions guide | ✅ done |
 
-**Phase 5 status: COMPLETE — 6/6 files done, 353 tests green**
-(`python -m unittest discover -s tests -t .`).
+**Phase 5 status: COMPLETE — 6/6 files done, 353 tests green at the time of
+completion** (`python -m unittest discover -s tests -t .`).
 
-## 🎉 ORBIT IS 100% COMPLETE — all 5 phases ✅
+## 🎉 ORBIT IS 100% COMPLETE — all 5 phases + the Financial Guardrail ✅
 
-33 source/test files, 353 unit tests, every checkpoint committed and pushed to
+35 source/test files, **411 unit tests**, every checkpoint committed and pushed to
 `main`. Remaining risk is only hardware that does not exist in this build
 environment (a real phone with Termux:API, wireless ADB, mpv and live API keys).
 
@@ -403,7 +403,12 @@ environment (a real phone with Termux:API, wireless ADB, mpv and live API keys).
 | 10 | `tests/test_memory_engine.py` | 36 tests: OTP turn, bank alert, fact, rule all skipped | ✅ done |
 | 11 | `telegram_controller.py` | Pre-dispatch OTP/bank refusal + lock line in `/status` | ✅ done |
 | 12 | `main.py` + tests | `doctor` shows the Banking Security Lock row | ✅ done |
-| 13 | `install.sh` + `README.md` | Document and surface the guardrail | ⏳ pending |
+| 13 | `install.sh` + `README.md` | Document and surface the guardrail | ✅ done |
+
+**Security hardening status: COMPLETE — 13/13 files done, 411 tests green.**
+The guardrail cannot be disabled by configuration; it lives in code at every layer:
+brain decision → ADB intent/screenshot → notification poll → memory write → Telegram
+input, and `doctor` proves the lock is active.
 
 ### Security decisions on record
 
