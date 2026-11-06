@@ -34,6 +34,20 @@ SMS_MSG = {
     "content": "OTP 445566",
     "when": 1700000002000,
 }
+SMS_CLEAN = {
+    "key": "sms:2",
+    "packageName": "com.google.android.apps.messaging",
+    "title": "রহিম",
+    "content": "কাল আসছি",
+    "when": 1700000002500,
+}
+BANK_ALERT = {
+    "key": "bank:1",
+    "packageName": "com.whatsapp",
+    "title": "SBI",
+    "content": "Rs.500 debited from your a/c 1234",
+    "when": 1700000004000,
+}
 CHROME_DOWNLOAD = {
     "key": "chrome:1",
     "packageName": "com.android.chrome",
@@ -337,11 +351,11 @@ class TestReply(unittest.TestCase):
 
     def test_reply_sms_uses_comm_manager(self):
         comm = FakeComm()
-        message = NotificationResponder._normalise(SMS_MSG)
+        message = NotificationResponder._normalise(SMS_CLEAN)
         result = make(comm=comm).reply_to(message, "ঠিক আছে")
         self.assertTrue(result["ok"])
         self.assertEqual(result["via"], "sms")
-        self.assertEqual(comm.calls[0]["contact"], "01712345678")
+        self.assertEqual(comm.calls[0]["contact"], "রহিম")
 
     def test_reply_telegram_needs_manual(self):
         adb, comm = FakeAdb(), FakeComm()
@@ -379,6 +393,90 @@ class TestReply(unittest.TestCase):
         result = responder.poll(auto_reply=True)
         self.assertTrue(result["auto_reply"])
         self.assertEqual(len(adb.calls), 1)
+
+
+# --------------------------------------------------------------------------- #
+# Financial / OTP guard
+# --------------------------------------------------------------------------- #
+
+class TestSecurityFilter(unittest.TestCase):
+    def test_otp_sms_is_never_returned_logged_or_answered(self):
+        memory = FakeMemory()
+        adb = FakeAdb()
+        responder = make([SMS_MSG], memory=memory, adb=adb, brain=FakeBrain(), auto_reply=True)
+
+        result = responder.poll()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["count"], 0)
+        self.assertEqual(result["new_messages"], [])
+        self.assertEqual(result["blocked"], 1)
+        self.assertEqual(result["replies"], [])
+        self.assertEqual(memory.turns, [])
+        self.assertEqual(adb.calls, [])
+        self.assertIn("নতুন কোনো মেসেজ নেই", result["summary_bn"])
+
+    def test_bank_transaction_alert_is_blocked(self):
+        memory = FakeMemory()
+        result = make([BANK_ALERT], memory=memory).poll()
+        self.assertEqual(result["count"], 0)
+        self.assertEqual(result["blocked"], 1)
+        self.assertEqual(memory.turns, [])
+
+    def test_blocked_notification_is_not_reported_twice(self):
+        responder = make([SMS_MSG])
+        self.assertEqual(responder.poll()["blocked"], 1)
+        second = responder.poll()
+        self.assertEqual(second["blocked"], 0)
+        self.assertEqual(second["count"], 0)
+
+    def test_log_messages_skips_sensitive_direct_calls(self):
+        memory = FakeMemory()
+        responder = make(memory=memory)
+        result = responder.log_messages([NotificationResponder._normalise(SMS_MSG)])
+
+        self.assertEqual(result["logged"], [])
+        self.assertEqual(result["skipped"], 1)
+        self.assertEqual(memory.turns, [])
+
+    def test_compose_reply_refuses_sensitive_message_before_the_brain(self):
+        brain = FakeBrain()
+        responder = make(brain=brain)
+        drafted = responder.compose_reply(NotificationResponder._normalise(SMS_MSG))
+
+        self.assertFalse(drafted["ok"])
+        self.assertEqual(drafted["error"], "sensitive_notification_blocked")
+        self.assertIn("ওটিপি", drafted["reply_bn"])
+        self.assertEqual(brain.prompts, [])
+
+    def test_reply_to_sensitive_message_sends_nothing(self):
+        adb, comm = FakeAdb(), FakeComm()
+        responder = make(adb=adb, comm=comm)
+        result = responder.reply_to(NotificationResponder._normalise(BANK_ALERT), "ঠিক আছে")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "sensitive_notification_blocked")
+        self.assertEqual(adb.calls, [])
+        self.assertEqual(comm.calls, [])
+
+    def test_reply_text_with_a_secret_is_refused(self):
+        adb = FakeAdb()
+        responder = make(adb=adb)
+        result = responder.reply_to(
+            NotificationResponder._normalise(WHATSAPP_MSG), "আমার OTP 445566"
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "secret_message_blocked")
+        self.assertEqual(adb.calls, [])
+
+    def test_normal_message_still_works_alongside_a_blocked_one(self):
+        memory = FakeMemory()
+        result = make([WHATSAPP_MSG, SMS_MSG], memory=memory).poll()
+
+        self.assertEqual({m["key"] for m in result["new_messages"]}, {"wa:1"})
+        self.assertEqual(result["blocked"], 1)
+        self.assertEqual(len(memory.turns), 1)
 
 
 # --------------------------------------------------------------------------- #
