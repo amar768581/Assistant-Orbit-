@@ -401,7 +401,7 @@ environment (a real phone with Termux:API, wireless ADB, mpv and live API keys).
 | 8 | `tests/test_notification_responder.py` | 40 tests: blocked before memory/brain/reply, dedupe of blocked | ✅ done |
 | 9 | `memory_engine.py` | `remember_turn` / `learn_from_text` refuse to persist secrets and bank alerts | ✅ done |
 | 10 | `tests/test_memory_engine.py` | 36 tests: OTP turn, bank alert, fact, rule all skipped | ✅ done |
-| 11 | `telegram_controller.py` | Pre-dispatch OTP/bank refusal + lock line in `/status` | ⏳ pending |
+| 11 | `telegram_controller.py` | Pre-dispatch OTP/bank refusal + lock line in `/status` | ✅ done |
 | 12 | `main.py` + tests | `doctor` shows the Banking Security Lock row | ⏳ pending |
 | 13 | `install.sh` + `README.md` | Document and surface the guardrail | ⏳ pending |
 
@@ -453,6 +453,10 @@ environment (a real phone with Termux:API, wireless ADB, mpv and live API keys).
   key/value and `add_rule` the rule text/key. A hit returns `{ok: True, skipped: "sensitive"}`
   and writes **nothing** — no episode, no profile fact, no rule. The caller still gets a
   normal `ok` so a sensitive notification can neither crash a poll nor teach ORBIT a secret.
+- **Telegram refuses before the dispatcher**: `handle_text` checks the message for a secret
+  or a financial request and answers with the refusal without calling `dispatcher.process`
+  at all (defence in depth if the brain were replaced). `/status` now shows the live
+  banking-lock summary (`security_report()`: app/package counts + OTP/screen protection).
 
 ## Known environment notes
 

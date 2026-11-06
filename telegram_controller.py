@@ -36,6 +36,13 @@ from briefing_agent import BriefingAgent
 from call_receptionist import CallReceptionist
 from config import settings as default_settings
 from security_guard import SecurityGuard
+from security_policy import (
+    BANKING_REFUSAL_BN,
+    SECRET_REFUSAL_BN,
+    contains_secret,
+    is_financial_request,
+    security_report,
+)
 from system_control import SystemControl, to_bengali_digits
 
 try:  # optional at import time so tests/desktop need no requests
@@ -362,6 +369,7 @@ class TelegramController:
 
         lines.append(self._memory_line())
         lines.append(self._services_line())
+        lines.append(f"🔒 ব্যাংকিং লক: {security_report()['label_bn']}")
 
         uptime = max(0, int(self.clock() - self.started_at))
         minutes, seconds = divmod(uptime, 60)
@@ -546,6 +554,17 @@ class TelegramController:
         if not text.strip():
             self.send_message(chat_id, EMPTY_TEXT_BN)
             return {"ok": False, "kind": "text", "error": "empty text"}
+
+        # Defence in depth: even if the dispatcher/brain were replaced, a
+        # Telegram command can never attempt a bank login or carry a secret.
+        if contains_secret(text):
+            log.warning("Refused a Telegram message containing a secret")
+            self.send_message(chat_id, SECRET_REFUSAL_BN)
+            return {"ok": False, "kind": "blocked", "reply_bn": SECRET_REFUSAL_BN}
+        if is_financial_request(text):
+            log.warning("Refused a financial Telegram request before dispatch")
+            self.send_message(chat_id, BANKING_REFUSAL_BN)
+            return {"ok": False, "kind": "blocked", "reply_bn": BANKING_REFUSAL_BN}
 
         try:
             outcome = self._dispatcher().process(text)
