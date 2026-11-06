@@ -299,11 +299,49 @@ goes through Gemini vision instead.
   into `{ok: False, error: "TypeError: …"}`, spoken as Bengali and recorded as failed —
   the assistant never dies on one broken module.
 
-## Phase 5 — Telegram bridge + always-on service (planned, not started)
+## Phase 5 — Telegram bridge + always-on service (Hour 5)
 
-- `telegram_bot.py` — admin-only long polling, voice notes in/out, inline confirmation.
-- `main.py` — wake-lock loop, hotword → STT → brain → dispatch → TTS.
-- `boot.sh` — `termux-wake-lock`, service start, crash restart.
+| # | File | Purpose | Status |
+|---|------|---------|--------|
+| 1 | `telegram_controller.py` | Admin-only Bot API long polling, voice notes, commands, proactive pushes | ✅ done |
+| 2 | `tests/test_telegram_controller.py` | 42 tests: security gate, commands, media, polling, chunking | ✅ done |
+| 3 | `main.py` | Wake-lock, 5-thread supervisor, CLI (`daemon`/`once`/`voice`/`briefing`/`doctor`) | ⏳ pending |
+| 4 | `tests/test_main.py` | Supervisor/CLI/wake-lock/doctor tests with fakes | ⏳ pending |
+| 5 | `install.sh` | Idempotent Termux installer + tests + doctor | ⏳ pending |
+| 6 | `README.md` | Bengali + English setup/architecture/permissions guide | ⏳ pending |
+
+### Phase 5 decisions on record
+
+- **No Telegram SDK**: the Bot API is HTTPS, so `requests` is the whole client and the
+  injectable session makes every test deterministic. `getUpdates` long polling (25s) avoids a
+  public webhook, which Termux cannot serve reliably behind mobile NAT.
+- **One gate, checked before parsing**: `chat_id == settings.admin_chat_id`. A stranger gets
+  exactly one polite refusal per chat per process (no spam loop), a `SECURITY:` warning with
+  the chat/sender id, and its payload never reaches the brain or dispatcher. A missing
+  `ADMIN_CHAT_ID` refuses everyone — the safe default for a device that can dial.
+- **Outbound text is chunked, never truncated**: messages over 4000 chars split on newlines
+  (hard-split for a pathological single line), each part ≤4096, and the send reports
+  `parts`. A long briefing reaches Boss complete.
+- **Intruder evidence is one message**: photo + `summary_bn` + tappable Maps link in the
+  caption; if the photo file is gone or the upload fails it degrades to one text message
+  with the link, so evidence is never silently lost.
+- **Voice notes are downloaded then transcribed** via `transcribe_file` when the engine
+  exposes it, otherwise the existing `transcribe()` — no dependency on a renamed method.
+  The transcript is echoed ("🎧 শুনলাম: …") before the Bengali answer, and STT/download
+  failures get their own Bengali explanation instead of a crash.
+- **Commands are exact and side-effect free**: `/start /help /status /briefing /thinker
+  /intruder /receptionist on|off`, case-insensitive and `@BotName`-suffixed allowed. They
+  bypass the brain entirely, and `/intruder` goes straight to `SecurityGuard` so it works
+  even when the LLM is down.
+- **`/status` tells the truth** from the actual modules (battery JSON, memory `stats()`,
+  receptionist flag, injected thread states via `status_provider`); a missing module says
+  so rather than showing a fake green tick.
+- **Polling never dies on one bad update**: each update is handled inside `try/except`, the
+  offset advances only past real `update_id`s, transport errors back off 3s, and the loop
+  exits on a stop event (used by `main.py`'s supervisor).
+- **Push helpers are thread-safe by construction**: `notify_boss`, `send_intruder_alert` and
+  `send_call_summary` only read settings and call the session, so the battery, reception and
+  notification threads can message Boss without touching the poll loop.
 
 ## Known environment notes
 
