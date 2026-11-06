@@ -93,8 +93,10 @@ Termux binary instead of crashing.
 **Phase 2 status: COMPLETE — 4/4 files done, 70 tests green**
 (`python -m unittest discover -s tests -t .`).
 
-Still to come later: `actions.py` (dispatcher over all 13 actions), `screen_reader.py`
-(`read_screen` via UI Automator dump), `open_app`/`answer_call` helpers.
+Delivered later in Phase 4: `actions.py` (dispatcher over all 13 actions),
+`adb_automation.open_app` / `read_screen`, and `CallReceptionist.answer()` for `answer_call`.
+A standalone `screen_reader.py` (UI Automator text dump) is no longer needed — `read_screen`
+goes through Gemini vision instead.
 
 ### Phase 2 decisions on record
 
@@ -219,8 +221,11 @@ Still to come later: `actions.py` (dispatcher over all 13 actions), `screen_read
 | 4 | `tests/test_notification_responder.py` | 32 tests: parsing, dedupe, memory, reply channels, inline tap | ✅ done |
 | 5 | `briefing_agent.py` | `market_news`: world news RSS + Nifty snapshot + Bengali Thinker brief | ✅ done |
 | 6 | `tests/test_briefing_agent.py` | 23 tests: RSS, quotes, LLM path, fallbacks | ✅ done |
-| 7 | `actions.py` | `ActionDispatcher` over all 13 actions + speak + memory | ⏳ pending |
-| 8 | `tests/test_actions.py` | Dispatch table, failure and speak tests | ⏳ pending |
+| 7 | `actions.py` | `ActionDispatcher` over all 13 actions + speak + memory | ✅ done |
+| 8 | `tests/test_actions.py` | 33 tests: every route, failures, speech, recording | ✅ done |
+
+**Phase 4 status: COMPLETE — 8/8 files done, 276 tests green**
+(`python -m unittest discover -s tests -t .`).
 
 ### Phase 4 decisions on record
 
@@ -277,6 +282,22 @@ Still to come later: `actions.py` (dispatcher over all 13 actions), `screen_read
   duplicated when the fallback runs. The LLM only writes the 3–4 sentence factual body; if
   there is no key, a quota error or an empty answer, a deterministic Bengali body is built
   from the same headlines and market line, and `llm_used` says which happened.
+- **One dispatch table, and nothing outside it runs**: `ActionDispatcher.handlers()` maps
+  exactly the 13 whitelisted actions onto their modules. An unknown/missing action is
+  refused before any module is called (no dial, no SMS, no intent).
+- **The spoken line reports reality, not intent**: on success the dispatcher prefers the
+  module's `reply_bn` → `summary_bn` → `message_bn` → the decision's reply; on failure it
+  uses the module's Bengali failure or a generic "বস, …টা করতে পারলাম না" and **never** the
+  model's optimistic "কল দিচ্ছি" line. Every reply goes through `ensure_boss_address()`.
+- **Execution is recorded where it happened**: the dispatcher appends an episode with
+  `outcome="ok"|"failed"` and a compact result (no paths, no keys). `process()` (brain +
+  dispatch) passes `record=False` because `Brain.think()` already logged the turn — this is
+  the one place the two memory hooks would otherwise double-count.
+- **Speech and memory are both optional**: `speak_reply=False` (or a missing voice engine)
+  leaves `spoken=False` without failing the action; a TTS exception is swallowed. A memory
+  failure leaves `recorded=False` and `ok` untouched. A handler that raises is caught, turned
+  into `{ok: False, error: "TypeError: …"}`, spoken as Bengali and recorded as failed —
+  the assistant never dies on one broken module.
 
 ## Phase 5 — Telegram bridge + always-on service (planned, not started)
 
