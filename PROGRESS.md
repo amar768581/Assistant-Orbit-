@@ -307,8 +307,17 @@ goes through Gemini vision instead.
 | 2 | `tests/test_telegram_controller.py` | 42 tests: security gate, commands, media, polling, chunking | ✅ done |
 | 3 | `main.py` | Wake-lock, 5-thread supervisor, CLI (`daemon`/`once`/`voice`/`briefing`/`doctor`) | ✅ done |
 | 4 | `tests/test_main.py` | 35 tests: wake-lock, supervisor, ticks, CLI, doctor | ✅ done |
-| 5 | `install.sh` | Idempotent Termux installer + tests + doctor | ⏳ pending |
-| 6 | `README.md` | Bengali + English setup/architecture/permissions guide | ⏳ pending |
+| 5 | `install.sh` | Idempotent Termux installer + tests + doctor | ✅ done |
+| 6 | `README.md` | Bengali + English setup/architecture/permissions guide | ✅ done |
+
+**Phase 5 status: COMPLETE — 6/6 files done, 353 tests green**
+(`python -m unittest discover -s tests -t .`).
+
+## 🎉 ORBIT IS 100% COMPLETE — all 5 phases ✅
+
+33 source/test files, 353 unit tests, every checkpoint committed and pushed to
+`main`. Remaining risk is only hardware that does not exist in this build
+environment (a real phone with Termux:API, wireless ADB, mpv and live API keys).
 
 ### Phase 5 decisions on record
 
@@ -368,6 +377,15 @@ goes through Gemini vision instead.
   `--strict`. `doctor` checks both keys, `.env`, the SQLite DB, Python, eight Termux:API
   binaries and `adb devices` — readiness means AI + memory + Python, warnings are optional
   extras (Telegram, ADB, individual binaries).
+- **The installer is idempotent and non-destructive**: package installation is safe to
+  repeat, `.env` is created only when missing (mode 600) and never overwritten, tests and
+  `doctor` are skipped only on request, and it detects non-Termux hosts and degrades to
+  instructions instead of failing. Verified with a stubbed `python`: two consecutive runs
+  leave the edited `.env` intact at mode 600.
+- **Docs are bilingual and honest**: Bengali is the primary guide (features, 5-step install,
+  command table, permissions, ADB pairing, 24/7, security, troubleshooting); the English
+  half documents the architecture, file map, run modes and limitations. The README states
+  plainly that hardware paths were verified with fakes, not on a phone.
 
 ## Known environment notes
 
@@ -375,3 +393,19 @@ goes through Gemini vision instead.
 - `termux-*` binaries and `mpv` are absent on desktop/CI — every device call must
   degrade gracefully instead of crashing (tested by unit import/compile only).
 - Bengali TTS voice: `bn-IN-BashkarNeural` (male, default) / `bn-IN-TanishaaNeural` (female).
+- Live checks that *did* run here: real RSS + Yahoo Nifty feed (briefing produced a real
+  Bengali brief and spoken reply), a fake-runner WhatsApp auto-reply end-to-end, and the
+  installer's two-run idempotency.
+- Still unverified until it runs on a phone: ADB app launching / call answering, Termux:API
+  permissions, mpv playback, live Gemini vision and a real Telegram bot session.
+
+## How to run the finished assistant
+
+```bash
+bash install.sh                       # idempotent Termux setup
+nano .env                             # keys + ADMIN_CHAT_ID
+python main.py doctor                 # readiness table
+python main.py once "টর্চ জালাও"        # one command
+python main.py                        # 24/7 daemon + Bengali CLI
+python main.py daemon --no-cli        # headless (Termux:Boot)
+```
