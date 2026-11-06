@@ -387,6 +387,46 @@ environment (a real phone with Termux:API, wireless ADB, mpv and live API keys).
   half documents the architecture, file map, run modes and limitations. The README states
   plainly that hardware paths were verified with fakes, not on a phone.
 
+## Security hardening — Financial & Secret Guardrail (post-launch)
+
+| # | File | Purpose | Status |
+|---|------|---------|--------|
+| 1 | `security_policy.py` | One source of truth: blocked apps/packages, OTP/PIN/bank-alert patterns, screen guard, refusals | ✅ done |
+| 2 | `tests/test_security_policy.py` | 25 tests: bank names/packages, secrets, alerts, FLAG_SECURE | ✅ done |
+| 3 | `adb_automation.py` | Refuse banking `open_app`; `read_screen` checks foreground + FLAG_SECURE (fail-closed) | ⏳ pending |
+| 4 | `tests/test_adb_automation.py` | Blocked-launch and screen-guard tests | ⏳ pending |
+| 5 | `brain.py` | `validate_decision()` turns financial login / PIN-OTP entry into a `speak` refusal | ⏳ pending |
+| 6 | `tests/test_brain.py` | Model tries to open a bank / send an OTP → refusal | ⏳ pending |
+| 7 | `notification_responder.py` | Never lists, logs or auto-replies to OTP/PIN/bank notifications | ⏳ pending |
+| 8 | `tests/test_notification_responder.py` | Sensitive notifications filtered end-to-end | ⏳ pending |
+| 9 | `memory_engine.py` | `remember_turn` / `learn_from_text` refuse to persist secrets and bank alerts | ⏳ pending |
+| 10 | `tests/test_memory_engine.py` | Nothing sensitive reaches SQLite | ⏳ pending |
+| 11 | `telegram_controller.py` | Pre-dispatch OTP/bank refusal + lock line in `/status` | ⏳ pending |
+| 12 | `main.py` + tests | `doctor` shows the Banking Security Lock row | ⏳ pending |
+| 13 | `install.sh` + `README.md` | Document and surface the guardrail | ⏳ pending |
+
+### Security decisions on record
+
+- **Separate module, not duplicated constants**: `security_policy.py` is imported (and its
+  names re-exported) by `adb_automation`, `brain`, `notification_responder` and
+  `memory_engine` — four copies of a blocklist would eventually disagree, and `brain` cannot
+  import `adb_automation` directly because `adb_automation` already imports `brain`.
+- **Blocking is broader than the named apps**: exact packages for SBI YONO, HDFC, ICICI,
+  Axis, Kotak, PNB, BoB, Canara, Union, IDFC, GPay/Tez, PhonePe, Paytm, BHIM, Amazon Pay,
+  CRED, Angel One, Zerodha, Groww, Upstox, PayPal, Mobikwik, Freecharge, Slice, Wise — plus
+  keyword matches (`bank`, `upi`, `wallet`, `netbanking`, `finance`, `broking`, `pay`) and
+  Bengali names (ব্যাংক, পেমেন্ট, ওয়ালেট, লেনদেন, শেয়ার). Blocking a harmless app is a minor
+  annoyance; touching a bank is not.
+- **Fail closed on screen inspection**: if `dumpsys window` cannot be read, the focused
+  package cannot be parsed, `FLAG_SECURE` is set, or the app is financial, `read_screen`
+  refuses before `screencap` runs — no image is ever written or sent.
+- **One refusal vocabulary**: `BANKING_REFUSAL_BN`, `SECRET_REFUSAL_BN`,
+  `SCREEN_REFUSAL_BN`, `NOTIFICATION_REFUSAL_BN` all start with "বস" and explain *why*.
+- **Secrets are recognised in both languages**: `otp`, `one time password`, `verification
+  code`, `cvv`, `pin`, `password`, `passcode`; `ওটিপি`, `পিন`, `পাসওয়ার্ড`, `গোপন কোড`,
+  `ভেরিফিকেশন কোড`; bank alerts add `debited`, `credited`, `a/c`, `neft`, `imps`, `upi`,
+  `available balance`, `ডেবিট`, `ক্রেডিট`, `লেনদেন`, `ব্যালেন্স`.
+
 ## Known environment notes
 
 - Target runtime: Termux on Android (`pkg install python mpv termux-api`).
