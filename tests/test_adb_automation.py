@@ -17,15 +17,20 @@ from system_control import CommandResult, SystemControl
 
 PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 4096
 
+SAFE_WINDOW = "  mCurrentFocus=Window{1a2b u0 com.whatsapp/com.whatsapp.HomeActivity}\n"
+BANK_WINDOW = "  mCurrentFocus=Window{9f1 u0 com.sbi.lotusintouch/com.sbi.lotusintouch.MainActivity}\n"
+SECURE_WINDOW = SAFE_WINDOW + "    fl=FLAG_SECURE\n"
+
 
 class FakeRunner:
     """Simulates adb: `pull` writes the PNG where adb would."""
 
-    def __init__(self, fail_contains=None, png=PNG_BYTES, pull_ok=True):
+    def __init__(self, fail_contains=None, png=PNG_BYTES, pull_ok=True, foreground=SAFE_WINDOW):
         self.calls = []
         self.fail_contains = fail_contains
         self.png = png
         self.pull_ok = pull_ok
+        self.foreground = foreground
 
     def __call__(self, cmd, timeout=None):
         self.calls.append(list(cmd))
@@ -35,6 +40,8 @@ class FakeRunner:
             needles = (needles,)
         if needles and any(needle in joined for needle in needles):
             return CommandResult(code=1, stderr=f"failed: {joined}")
+        if "dumpsys" in cmd and "window" in cmd:
+            return CommandResult(code=0, stdout=self.foreground)
         if "pull" in cmd:
             if not self.pull_ok:
                 return CommandResult(code=1, stderr="adb: device offline")
@@ -139,7 +146,6 @@ class TestOpenApp(unittest.TestCase):
             "ক্রোম": "com.android.chrome",
             "সেটিংস": "com.android.settings",
             "ঘড়ি": "com.google.android.deskclock",
-            "অ্যাঞ্জেল ওয়ান": "com.msf.angelone",
             "ক্যামেরা": "com.google.android.GoogleCamera",
         }
         for name, package in cases.items():
@@ -161,6 +167,24 @@ class TestOpenApp(unittest.TestCase):
         result = make().open_app("com.whatsapp")
         self.assertTrue(result["ok"])
         self.assertEqual(result["app"], "whatsapp")
+
+    def test_financial_apps_are_refused_before_any_adb_call(self):
+        blocked = (
+            "SBI YONO", "HDFC Bank", "ICICI Bank", "Axis Bank", "Kotak", "PNB",
+            "Google Pay", "PhonePe", "Paytm", "BHIM", "Amazon Pay", "CRED",
+            "Angel One", "অ্যাঞ্জেল ওয়ান", "Zerodha Kite", "Groww",
+            "com.phonepe.app", "com.sbi.lotusintouch", "com.google.android.apps.nbu.paisa.user",
+            "ব্যাংক অ্যাপ", "পেমেন্ট অ্যাপ", "com.example.mobilebanking",
+        )
+        for name in blocked:
+            with self.subTest(name=name):
+                runner = FakeRunner()
+                result = make(runner=runner).open_app(name)
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["error"], "banking_app_blocked")
+                self.assertEqual(runner.calls, [])
+                self.assertTrue(result["reply_bn"].startswith("বস"))
+                self.assertIn("ব্যাংকিং", result["reply_bn"])
 
     def test_unknown_app(self):
         runner = FakeRunner()
@@ -284,12 +308,72 @@ class TestWhatsApp(unittest.TestCase):
         self.assertFalse(result["send_attempt"]["ok"])
         self.assertFalse(result["sent"])
 
+    def test_secret_in_message_is_refused(self):
+        for body in ("আমার OTP 445566", "PIN 1234 পাঠাচ্ছি", "password is hunter2"):
+            with self.subTest(body=body):
+                runner = FakeRunner()
+                result = make(runner=runner).send_whatsapp(contact="রহিম", message=body)
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["error"], "secret_message_blocked")
+                self.assertEqual(runner.calls, [])
+                self.assertTrue(result["reply_bn"].startswith("বস"))
+
 
 # --------------------------------------------------------------------------- #
 # read_screen
 # --------------------------------------------------------------------------- #
 
 class TestReadScreen(unittest.TestCase):
+    def test_financial_foreground_blocks_before_screencap(self):
+        runner = FakeRunner(foreground=BANK_WINDOW)
+        session = FakeSession()
+        result = make(runner=runner, session=session).read_screen()
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "banking_screen_blocked")
+        self.assertEqual(result["reason"], "financial_app")
+        self.assertEqual(result["package"], "com.sbi.lotusintouch")
+        self.assertIn("ব্যাংকিং", result["reply_bn"])
+        self.assertEqual(runner.count("dumpsys", "window"), 1)
+        self.assertEqual(runner.count("screencap"), 0)
+        self.assertEqual(session.posts, [])
+
+    def test_flag_secure_blocks_before_screencap(self):
+        runner = FakeRunner(foreground=SECURE_WINDOW)
+        session = FakeSession()
+        result = make(runner=runner, session=session).read_screen()
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "banking_screen_blocked")
+        self.assertEqual(result["reason"], "flag_secure")
+        self.assertTrue(result["secure"])
+        self.assertEqual(runner.count("screencap"), 0)
+        self.assertEqual(session.posts, [])
+
+    def test_dumpsys_failure_is_fail_closed(self):
+        runner = FakeRunner(fail_contains="dumpsys")
+        session = FakeSession()
+        result = make(runner=runner, session=session).read_screen()
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "banking_screen_blocked")
+        self.assertEqual(result["reason"], "guard_unavailable")
+        self.assertEqual(runner.count("screencap"), 0)
+        self.assertEqual(session.posts, [])
+
+    def test_unparseable_window_is_fail_closed(self):
+        runner = FakeRunner(foreground="garbage without a focused window")
+        result = make(runner=runner, session=FakeSession()).read_screen()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "guard_unavailable")
+        self.assertEqual(runner.count("screencap"), 0)
+
+    def test_screen_guard_reports_the_safe_package(self):
+        guard = make(runner=FakeRunner()).screen_guard()
+        self.assertTrue(guard["ok"])
+        self.assertFalse(guard["blocked"])
+        self.assertEqual(guard["package"], "com.whatsapp")
+
     def test_screenshot_pull_and_vision(self):
         runner = FakeRunner()
         session = FakeSession()
