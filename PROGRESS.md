@@ -395,8 +395,8 @@ environment (a real phone with Termux:API, wireless ADB, mpv and live API keys).
 | 2 | `tests/test_security_policy.py` | 25 tests: bank names/packages, secrets, alerts, FLAG_SECURE | ✅ done |
 | 3 | `adb_automation.py` | Refuse banking `open_app`; `read_screen` checks foreground + FLAG_SECURE (fail-closed) | ✅ done |
 | 4 | `tests/test_adb_automation.py` | 38 tests: blocked launches, screen guard, secret WhatsApp | ✅ done |
-| 5 | `brain.py` | `validate_decision()` turns financial login / PIN-OTP entry into a `speak` refusal | ⏳ pending |
-| 6 | `tests/test_brain.py` | Model tries to open a bank / send an OTP → refusal | ⏳ pending |
+| 5 | `brain.py` | `validate_decision()` turns financial login / PIN-OTP entry into a `speak` refusal | ✅ done |
+| 6 | `tests/test_brain.py` | 26 tests: bank app, OTP SMS, PIN text, normal actions untouched | ✅ done |
 | 7 | `notification_responder.py` | Never lists, logs or auto-replies to OTP/PIN/bank notifications | ⏳ pending |
 | 8 | `tests/test_notification_responder.py` | Sensitive notifications filtered end-to-end | ⏳ pending |
 | 9 | `memory_engine.py` | `remember_turn` / `learn_from_text` refuse to persist secrets and bank alerts | ⏳ pending |
@@ -436,6 +436,12 @@ environment (a real phone with Termux:API, wireless ADB, mpv and live API keys).
   uploaded or described. The guard result is also exposed as `screen_guard()` for `doctor`.
 - **`send_whatsapp` is a second line of defence**: a message containing an OTP/PIN/password
   is refused (`secret_message_blocked`) before the deep link is built.
+- **The model is corrected, not trusted**: `validate_decision()` runs the same policy after
+  parameter normalisation. A decision to open `SBI YONO`/`com.phonepe.app`/`Angel One`, an
+  SMS/WhatsApp containing an OTP/PIN/password, or any `open_app` while the request itself is
+  financial becomes `{action: "speak", params: {"text": refusal}, reply_bn: refusal}` — the
+  refusal is spoken, never the model's optimistic "খুলছি" line. Normal torch/call/SMS paths
+  are untouched, and the policy names are re-exported from `brain` for `doctor`.
 
 ## Known environment notes
 

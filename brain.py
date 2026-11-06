@@ -36,6 +36,15 @@ except ImportError:  # pragma: no cover - exercised only on a bare interpreter
     requests = None  # type: ignore[assignment]
 
 from config import Settings, settings as default_settings
+from security_policy import (
+    BANKING_REFUSAL_BN,
+    BLOCKED_FINANCIAL_APPS,
+    BLOCKED_PACKAGES,
+    SECRET_REFUSAL_BN,
+    contains_secret,
+    is_financial_request,
+    is_financial_target,
+)
 
 log = logging.getLogger("orbit.brain")
 
@@ -535,6 +544,25 @@ def _normalise_params(action: str, params: Any) -> Dict[str, Any]:
     return clean
 
 
+def _financial_refusal(action: str, params: Dict[str, Any], user_text: str) -> Optional[str]:
+    """Return a Bengali refusal when a decision tries to touch money or secrets."""
+    if action == "open_app":
+        target = _clean_text(params.get("app") or params.get("name") or params.get("package"))
+        if is_financial_target(target):
+            return BANKING_REFUSAL_BN
+        if contains_secret(user_text):
+            return SECRET_REFUSAL_BN
+        if is_financial_request(user_text):
+            return BANKING_REFUSAL_BN
+
+    if action in ("sms", "whatsapp"):
+        body = _clean_text(params.get("message") or params.get("text") or params.get("body"))
+        if contains_secret(body) or contains_secret(user_text):
+            return SECRET_REFUSAL_BN
+
+    return None
+
+
 def validate_decision(obj: Dict[str, Any], user_text: str = "") -> Dict[str, Any]:
     """Turn arbitrary model JSON into the fixed ORBIT contract."""
     action = _clean_text(obj.get("action")).lower().replace("-", "_").replace(" ", "_")
@@ -561,6 +589,14 @@ def validate_decision(obj: Dict[str, Any], user_text: str = "") -> Dict[str, Any
     if action == "open_app" and not params.get("app"):
         action, params = "speak", {}
         reply = reply or "কোন অ্যাপটা খুলব বলবেন?"
+
+    # Non-bypassable financial guard: a model cannot open a bank app, type a
+    # PIN/OTP/password, or send one over SMS/WhatsApp even if it tries.
+    refusal = _financial_refusal(action, params, user_text)
+    if refusal:
+        log.warning("Financial guard blocked action=%r (user=%r)", action, user_text[:80])
+        action, params = "speak", {}
+        reply = refusal
 
     if action == "speak":
         params.setdefault("text", reply or user_text or DEFAULT_REPLIES["speak"])
