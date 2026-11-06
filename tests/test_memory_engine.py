@@ -103,6 +103,72 @@ class TestEpisodes(MemoryCase):
 
 
 # --------------------------------------------------------------------------- #
+# Financial / OTP guard
+# --------------------------------------------------------------------------- #
+
+class TestSensitiveData(MemoryCase):
+    def test_otp_turn_is_never_stored(self):
+        result = self.mem.remember_turn("আমার OTP ৪৪৫৫৬৬", DECISION)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["skipped"], "sensitive")
+        self.assertIsNone(result["episode_id"])
+        self.assertEqual(self.mem.episode_count(), 0)
+        self.assertEqual(self.mem.recent_episodes(), [])
+
+    def test_bank_alert_in_the_decision_is_never_stored(self):
+        decision = {
+            "action": "notification",
+            "params": {"text": "Rs.500 debited from your a/c 1234"},
+            "reply_bn": "বস, একটা মেসেজ এসেছে।",
+        }
+        result = self.mem.remember_turn("মেসেজ এসেছে", decision)
+
+        self.assertEqual(result["skipped"], "sensitive")
+        self.assertEqual(self.mem.episode_count(), 0)
+
+    def test_secret_in_the_reply_is_never_stored(self):
+        decision = {"action": "speak", "params": {}, "reply_bn": "বস, আপনার PIN ১২৩৪"}
+        result = self.mem.remember_turn("পিনটা বলো", decision)
+        self.assertEqual(result["skipped"], "sensitive")
+        self.assertEqual(self.mem.episode_count(), 0)
+
+    def test_bengali_bank_alert_is_not_stored(self):
+        result = self.mem.remember_turn("আমার অ্যাকাউন্টে ৫০০ টাকা ডেবিট হয়েছে", DECISION)
+        self.assertEqual(result["skipped"], "sensitive")
+        self.assertEqual(self.mem.episode_count(), 0)
+
+    def test_learning_ignores_secrets(self):
+        for text in ("আমার পিন ১২৩৪ মনে রাখো", "My password is hunter2", "CVV 123 মনে রাখো"):
+            with self.subTest(text=text):
+                result = self.mem.learn_from_text(text)
+                self.assertTrue(result["ok"])
+                self.assertEqual(result["skipped"], "sensitive")
+                self.assertEqual(result["facts"], [])
+                self.assertEqual(result["rules"], [])
+                self.assertFalse(result["learned"])
+        self.assertEqual(self.mem.profile(), [])
+
+    def test_fact_with_a_secret_is_refused(self):
+        result = self.mem.remember_fact("atm_pin", "1234")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["skipped"], "sensitive")
+        self.assertIsNone(self.mem.get_fact("atm_pin"))
+
+    def test_rule_with_a_secret_is_refused(self):
+        result = self.mem.add_rule("otp_lesson", "আমার OTP ৪৪৫৫৬৬ কারো সঙ্গে শেয়ার করব না")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["skipped"], "sensitive")
+        self.assertEqual(self.mem.rules(), [])
+
+    def test_normal_turn_still_works(self):
+        result = self.mem.remember_turn("টর্চ জালাও", DECISION)
+        self.assertTrue(result["ok"])
+        self.assertIsInstance(result["episode_id"], int)
+        self.assertEqual(self.mem.episode_count(), 1)
+
+
+# --------------------------------------------------------------------------- #
 # Profile facts
 # --------------------------------------------------------------------------- #
 
