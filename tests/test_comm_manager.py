@@ -46,8 +46,10 @@ class FakeRunner:
         return [c for c in self.calls if c and c[0] == name]
 
 
-def make(runner):
-    return CommManager(control=SystemControl(runner=runner), runner=runner)
+def make(runner, contacts=CONTACTS):
+    return CommManager(
+        control=SystemControl(runner=runner, contacts=contacts), runner=runner
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -179,7 +181,7 @@ class TestSendSms(unittest.TestCase):
 
     def test_empty_address_book(self):
         runner = FakeRunner(contacts=[])
-        result = make(runner).send_sms(contact="রহিম", message="হ্যালো")
+        result = make(runner, contacts=[]).send_sms(contact="রহিম", message="হ্যালো")
         self.assertFalse(result["ok"])
         self.assertEqual(runner.commands("termux-sms-send"), [])
 

@@ -99,7 +99,9 @@ class ContactsRunner:
 
 
 def make(runner=None, session=None, settings=None, screen_dir=None, control=None, **kwargs):
-    contacts = control or SystemControl(runner=ContactsRunner())
+    contacts = control or SystemControl(
+        runner=ContactsRunner(), contacts=[{"name": "রহিম", "number": "01712345678"}]
+    )
     return AdbAutomation(
         control=contacts,
         runner=runner or FakeRunner(),

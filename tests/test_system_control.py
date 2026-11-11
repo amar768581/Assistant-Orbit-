@@ -1,18 +1,18 @@
 """
-tests/test_system_control.py — unit tests for ORBIT's device layer.
-
-No Termux binaries are needed: every command goes through an injected fake
-runner (or a patched ``subprocess.run``), so this runs on desktop/CI.
-
-    python -m unittest discover -s tests -t . -v
+tests/test_system_control.py — battery, health, volume, Wi-Fi and contacts on a
+PC. No real hardware: psutil is faked, media keys are recorded, contacts come
+from a temporary JSON file.
 """
 
 from __future__ import annotations
 
 import json
 import subprocess
+import tempfile
 import time
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import system_control as sc
@@ -28,11 +28,9 @@ from system_control import (
 
 
 class FakeRunner:
-    """Queue of CommandResults; records every command it was given."""
-
-    def __init__(self, *results: CommandResult | list) -> None:
+    def __init__(self, *results):
         self.results = list(results)
-        self.calls: list[list[str]] = []
+        self.calls = []
 
     def __call__(self, cmd, timeout=None):
         self.calls.append(list(cmd))
@@ -41,54 +39,79 @@ class FakeRunner:
         result = self.results.pop(0)
         if isinstance(result, CommandResult):
             return result
-        if isinstance(result, str):  # shorthand: literal stdout, exit 0
-            return CommandResult(code=0, stdout=result)
-        return CommandResult(code=0, stdout=json.dumps(result))  # any JSON payload
+        return CommandResult(code=0, stdout=str(result))
 
 
-def ok(stdout: str = "", stderr: str = "") -> CommandResult:
-    return CommandResult(code=0, stdout=stdout, stderr=stderr)
+class FakeBattery:
+    def __init__(self, percent=17, plugged=False):
+        self.percent = percent
+        self.power_plugged = plugged
+        self.secsleft = -1
 
 
-def err(message: str = "boom", code: int = 1) -> CommandResult:
-    return CommandResult(code=code, stderr=message)
+class FakePsutil:
+    def __init__(self, battery="default"):
+        self.battery = FakeBattery() if battery == "default" else battery
 
+    def sensors_battery(self):
+        return self.battery
 
-def control(*results, voice=None, ttl: float = 300.0) -> SystemControl:
-    return SystemControl(runner=FakeRunner(*results), voice=voice, contact_ttl=ttl)
+    def cpu_percent(self, interval=None):
+        return 12.5
+
+    def cpu_count(self):
+        return 8
+
+    def virtual_memory(self):
+        return SimpleNamespace(
+            total=32 * 1024**3, used=10 * 1024**3, available=22 * 1024**3, percent=31.2
+        )
+
+    def disk_usage(self, anchor):
+        return SimpleNamespace(
+            total=512 * 1024**3, used=300 * 1024**3, free=212 * 1024**3, percent=58.6
+        )
+
+    def boot_time(self):
+        return time.time() - 3600
+
+    def process_iter(self, fields):
+        return []
 
 
 class FakeVoice:
-    def __init__(self, result: bool = True) -> None:
-        self.spoken: list[str] = []
+    def __init__(self, result=True):
+        self.spoken = []
         self.result = result
         self.last_error = None
 
-    def speak(self, text: str, **_kwargs) -> bool:
+    def speak(self, text, **_kwargs):
         self.spoken.append(text)
         return self.result
 
 
-BATTERY_PAYLOAD = {
-    "health": "GOOD",
-    "percentage": 17,
-    "plugged": "UNPLUGGED",
-    "status": "DISCHARGING",
-    "temperature": 31.5,
-    "current": -450,
-}
+def control(*results, voice=None, ttl=300.0, battery="default", psutil_module=None):
+    return SystemControl(
+        runner=FakeRunner(*results),
+        voice=voice,
+        contact_ttl=ttl,
+        psutil_module=psutil_module or FakePsutil(battery=battery),
+        platform_name="Windows",
+    )
+
 
 CONTACTS = [
     {"name": "Rahim Uddin", "number": "+8801712345678"},
     {"name": "রহিমা বেগম", "number": "01898765432"},
     {"name": "Karim Sheikh", "number": "01911122233"},
-    {"name": "Battery Service", "number": "16263"},
 ]
 
 
-# --------------------------------------------------------------------------- #
-# Helpers
-# --------------------------------------------------------------------------- #
+def write_contacts(directory: str) -> Path:
+    path = Path(directory) / "contacts.json"
+    path.write_text(json.dumps(CONTACTS, ensure_ascii=False), encoding="utf-8")
+    return path
+
 
 class TestHelpers(unittest.TestCase):
     def test_digit_conversion(self):
@@ -103,8 +126,6 @@ class TestHelpers(unittest.TestCase):
         self.assertEqual(normalise_number("abc"), "")
 
     def test_transliterate_matches_banglish(self):
-        # Bengali's inherent vowel is lost by a naive map: রহিম -> "rhim".
-        # The consonant skeleton is what makes "rahim" match anyway.
         self.assertEqual(transliterate("রহিম"), "rhim")
         self.assertEqual(sc._name_skeleton("রহিম"), sc._name_skeleton("rahim"))
         self.assertEqual(sc._normalise_name("Rahim Uddin"), "rahimuddin")
@@ -117,112 +138,72 @@ class TestHelpers(unittest.TestCase):
 
     def test_run_command_missing_binary(self):
         with mock.patch.object(sc, "which_binary", return_value=None):
-            result = run_command(["termux-torch", "on"])
+            result = run_command(["definitely-not-a-real-binary"])
         self.assertFalse(result.ok)
-        self.assertIn("pkg install termux-api", result.error)
+        self.assertIn("not found", result.error)
 
     def test_run_command_success_and_failure(self):
         completed = subprocess.CompletedProcess(["x"], 0, stdout="fine\n", stderr="")
         with mock.patch.object(sc, "which_binary", return_value="/usr/bin/x"), \
                 mock.patch.object(sc.subprocess, "run", return_value=completed) as run:
-            result = run_command(["termux-battery-status"], timeout=5)
+            result = run_command(["x"], timeout=5)
         self.assertTrue(result.ok)
         self.assertEqual(result.output, "fine")
         self.assertEqual(run.call_args.kwargs["timeout"], 5)
 
         with mock.patch.object(sc, "which_binary", return_value="/usr/bin/x"), \
-                mock.patch.object(sc.subprocess, "run", return_value=subprocess.CompletedProcess([], 3, "", "nope")):
-            result = run_command(["termux-torch", "on"])
+                mock.patch.object(sc.subprocess, "run",
+                                  return_value=subprocess.CompletedProcess([], 3, "", "nope")):
+            result = run_command(["x"])
         self.assertFalse(result.ok)
         self.assertEqual(result.code, 3)
 
-    def test_run_command_timeout(self):
+    def test_run_command_timeout_and_file_not_found(self):
         with mock.patch.object(sc, "which_binary", return_value="/usr/bin/x"), \
                 mock.patch.object(sc.subprocess, "run", side_effect=subprocess.TimeoutExpired("x", 5)):
-            result = run_command(["termux-location"], timeout=5)
+            result = run_command(["x"], timeout=5)
         self.assertEqual(result.code, 124)
         self.assertIn("timed out", result.error)
 
-    def test_run_command_file_not_found(self):
         with mock.patch.object(sc, "which_binary", return_value="/usr/bin/x"), \
                 mock.patch.object(sc.subprocess, "run", side_effect=FileNotFoundError()):
-            result = run_command(["termux-torch", "on"])
+            result = run_command(["x"])
         self.assertEqual(result.code, 127)
 
 
-# --------------------------------------------------------------------------- #
-# Torch
-# --------------------------------------------------------------------------- #
-
-class TestTorch(unittest.TestCase):
-    def test_on_off(self):
-        fake = FakeRunner(ok(), ok())
-        c = SystemControl(runner=fake)
-        self.assertEqual(c.torch("on")["state"], "on")
-        self.assertEqual(c.torch("off")["state"], "off")
-        self.assertEqual(fake.calls, [["termux-torch", "on"], ["termux-torch", "off"]])
-
-    def test_bengali_and_boolean_values(self):
-        fake = FakeRunner(ok(), ok(), ok())
-        c = SystemControl(runner=fake)
-        self.assertTrue(c.torch("চালু")["ok"])
-        self.assertTrue(c.torch(True)["ok"])
-        self.assertTrue(c.torch(False)["ok"])
-        self.assertEqual([call[1] for call in fake.calls], ["on", "on", "off"])
-
-    def test_invalid_state_never_runs_command(self):
-        fake = FakeRunner()
-        c = SystemControl(runner=fake)
-        result = c.torch("maybe")
-        self.assertFalse(result["ok"])
-        self.assertIn("invalid torch state", result["error"])
-        self.assertEqual(fake.calls, [])
-
-    def test_missing_binary(self):
-        c = SystemControl(runner=FakeRunner(CommandResult(code=127, error="termux-torch not found (pkg install termux-api)")))
-        result = c.torch("on")
-        self.assertFalse(result["ok"])
-        self.assertIn("termux-api", result["error"])
-        self.assertEqual(c.last_error, result["error"])
-
-
-# --------------------------------------------------------------------------- #
-# Battery
-# --------------------------------------------------------------------------- #
-
 class TestBattery(unittest.TestCase):
-    def test_parses_status(self):
-        c = control(json.dumps(BATTERY_PAYLOAD))
-        result = c.battery_status()
+    def test_parses_psutil_battery(self):
+        result = control().battery_status()
         self.assertTrue(result["ok"])
         self.assertEqual(result["percentage"], 17)
         self.assertEqual(result["status"], "DISCHARGING")
         self.assertEqual(result["plugged"], "UNPLUGGED")
-        self.assertEqual(result["temperature"], 31.5)
+        self.assertIsNone(result["temperature"])
         self.assertTrue(result["low"])
         self.assertFalse(result["full"])
         self.assertIn("১৭ শতাংশ", result["message_bn"])
         self.assertIn("চার্জ কমছে", result["message_bn"])
-        self.assertIn("৩১.৫", result["message_bn"])
-        json.dumps(result)  # must stay serialisable for Telegram
+        json.dumps(result)
 
     def test_charging_full(self):
-        payload = {**BATTERY_PAYLOAD, "percentage": 100, "status": "FULL", "plugged": "PLUGGED_AC"}
-        result = control(json.dumps(payload)).battery_status()
+        result = control(battery=FakeBattery(100, True)).battery_status()
         self.assertTrue(result["full"])
+        self.assertEqual(result["status"], "FULL")
         self.assertIn("পুরো চার্জ", result["message_bn"])
         self.assertIn("চার্জারে লাগানো", result["message_bn"])
 
-    def test_unreadable_and_missing_percentage(self):
-        self.assertFalse(control("not json").battery_status()["ok"])
-        self.assertFalse(control("{").battery_status()["ok"])
-        self.assertFalse(control(json.dumps({"percentage": "x"})).battery_status()["ok"])
-        self.assertFalse(control(json.dumps({"status": "CHARGING"})).battery_status()["ok"])
-
-    def test_command_failure(self):
-        result = control(err("termux-api missing")).battery_status()
+    def test_desktop_without_battery_is_clean_failure(self):
+        result = control(battery=None).battery_status()
         self.assertFalse(result["ok"])
-        self.assertIn("termux-api missing", result["error"])
+        self.assertIn("ব্যাটারি নেই", result["message_bn"])
+
+    def test_psutil_missing(self):
+        c = SystemControl(psutil_module=None, platform_name="Windows")
+        c._psutil = None
+        with mock.patch.dict("sys.modules", {"psutil": None}):
+            result = c.battery_status()
+        self.assertFalse(result["ok"])
+        self.assertIn("psutil", result["error"])
 
     def test_alert_boundaries(self):
         self.assertIsNone(SystemControl.battery_alert_message(21, "DISCHARGING"))
@@ -237,8 +218,7 @@ class TestBattery(unittest.TestCase):
 
     def test_check_battery_speaks_low_alert(self):
         voice = FakeVoice()
-        c = control(json.dumps(BATTERY_PAYLOAD), voice=voice)
-        result = c.check_battery()
+        result = control(voice=voice).check_battery()
         self.assertEqual(result["alert"], "low")
         self.assertTrue(result["spoken"])
         self.assertEqual(len(voice.spoken), 1)
@@ -246,220 +226,196 @@ class TestBattery(unittest.TestCase):
 
     def test_check_battery_cooldown_and_force(self):
         voice = FakeVoice()
-        c = control(json.dumps(BATTERY_PAYLOAD), json.dumps(BATTERY_PAYLOAD), json.dumps(BATTERY_PAYLOAD), voice=voice)
+        c = control(voice=voice)
         c.check_battery()
-        c.check_battery()                      # suppressed by cooldown
+        c.check_battery()
         self.assertEqual(len(voice.spoken), 1)
-        c.check_battery(force=True)            # explicit repeat allowed
+        c.check_battery(force=True)
         self.assertEqual(len(voice.spoken), 2)
 
     def test_check_battery_notify_false(self):
         voice = FakeVoice()
-        c = control(json.dumps(BATTERY_PAYLOAD), voice=voice)
-        result = c.check_battery(notify=False)
+        result = control(voice=voice).check_battery(notify=False)
         self.assertEqual(result["alert"], "low")
         self.assertFalse(result["spoken"])
         self.assertEqual(voice.spoken, [])
 
     def test_alert_state_resets_when_battery_recovers(self):
-        healthy = json.dumps({**BATTERY_PAYLOAD, "percentage": 80, "status": "CHARGING"})
-        c = control(json.dumps(BATTERY_PAYLOAD), healthy, json.dumps(BATTERY_PAYLOAD), voice=FakeVoice())
+        c = SystemControl(
+            psutil_module=FakePsutil(FakeBattery(17, False)),
+            voice=FakeVoice(),
+            platform_name="Windows",
+        )
         c.check_battery()
         self.assertIn("low", c._last_alert)
+        c._psutil = FakePsutil(FakeBattery(85, True))
         c.check_battery()
-        self.assertEqual(c._last_alert, {})   # cleared -> a future drop alerts again
-
-    def test_full_battery_alert(self):
-        voice = FakeVoice()
-        payload = json.dumps({**BATTERY_PAYLOAD, "percentage": 100, "status": "FULL"})
-        result = control(payload, voice=voice).check_battery()
-        self.assertEqual(result["alert"], "full")
-        self.assertIn("চার্জার খুলে ফেলুন", voice.spoken[0])
-
-    def test_battery_failure_returns_error(self):
-        result = control(err("no battery api")).check_battery()
-        self.assertFalse(result["ok"])
-
-    def test_voice_failure_does_not_raise(self):
-        result = control(json.dumps(BATTERY_PAYLOAD), voice=FakeVoice(result=False)).check_battery()
-        self.assertTrue(result["ok"])
-        self.assertFalse(result["spoken"])
+        self.assertEqual(c._last_alert, {})
 
     def test_monitor_thread_starts_and_stops(self):
         voice = FakeVoice()
-        c = control(json.dumps(BATTERY_PAYLOAD), json.dumps({**BATTERY_PAYLOAD, "percentage": 85, "status": "CHARGING"}), voice=voice)
+        c = control(voice=voice)
         thread = c.start_battery_monitor(interval=60)
         self.assertTrue(thread.daemon)
         self.assertTrue(thread.is_alive())
         self.assertTrue(c.monitor_running)
         c.stop_battery_monitor()
         self.assertFalse(c.monitor_running)
-        self.assertGreaterEqual(len(voice.spoken), 1)   # low alert spoke on first pass
+        self.assertGreaterEqual(len(voice.spoken), 1)
+
+    def test_voice_failure_does_not_raise(self):
+        result = control(voice=FakeVoice(result=False)).check_battery()
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["spoken"])
 
 
-# --------------------------------------------------------------------------- #
-# Volume
-# --------------------------------------------------------------------------- #
+class TestTorchAndHealth(unittest.TestCase):
+    def test_torch_is_reported_as_unsupported(self):
+        result = control().torch("on")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "torch_not_supported")
+        self.assertIn("টর্চ নেই", result["message_bn"])
 
-VOLUMES = [
-    {"stream": "music", "volume": 8, "max_volume": 15},
-    {"stream": "call", "volume": 3, "max_volume": 7},
-]
+    def test_health_uses_psutil(self):
+        result = control().system_health()
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["cpu_percent"], 12.5)
+        self.assertIn("সিপিইউ ১২.৫", result["summary_bn"])
 
 
 class TestVolume(unittest.TestCase):
-    def test_sets_mapped_level(self):
-        fake = FakeRunner(VOLUMES, ok())
-        c = SystemControl(runner=fake)
-        result = c.set_volume(50)
+    def test_absolute_level_uses_media_keys(self):
+        keys = []
+        c = SystemControl(key_sender=lambda vk: keys.append(vk) or True, platform_name="Windows")
+        result = c.set_volume(60)
         self.assertTrue(result["ok"])
-        self.assertEqual(result["level"], 50)
-        self.assertEqual(result["raw"], 8)          # round(0.5 * 15) == 8
-        self.assertEqual(fake.calls[1], ["termux-volume", "music", "8"])
-        self.assertIn("ভলিউম ৫০", result["message_bn"])
+        self.assertEqual(result["level"], 60)
+        self.assertEqual(result["raw"], 60)
+        self.assertEqual(result["max_volume"], 100)
+        self.assertIn("ভলিউম ৬০", result["message_bn"])
+        self.assertTrue(keys)                 # 50 -> 60 is ~5 up presses
+        self.assertEqual(set(keys), {sc.VK_VOLUME_UP})
 
-    def test_zero_and_hundred(self):
-        fake = FakeRunner(VOLUMES, ok(), VOLUMES, ok())
-        c = SystemControl(runner=fake)
-        self.assertEqual(c.set_volume(0)["raw"], 0)
-        self.assertEqual(c.set_volume(100)["raw"], 15)
+    def test_direction_mapping(self):
+        c = SystemControl(key_sender=lambda vk: True, platform_name="Windows")
+        self.assertEqual(c.set_volume(direction="up")["level"], 60)
+        self.assertEqual(c.set_volume(direction="down")["level"], 50)
+        self.assertEqual(c.set_volume(direction="mute")["level"], 0)
+        self.assertEqual(c.set_volume(direction="unmute")["level"], 30)
 
-    def test_clamps_out_of_range(self):
-        fake = FakeRunner(VOLUMES, ok(), VOLUMES, ok())
-        c = SystemControl(runner=fake)
+    def test_clamps_and_bengali_digits(self):
+        c = SystemControl(key_sender=lambda vk: True, platform_name="Windows")
         self.assertEqual(c.set_volume(150)["level"], 100)
         self.assertEqual(c.set_volume("১৫")["level"], 15)
 
-    def test_direction_mapping(self):
-        fake = FakeRunner(VOLUMES, ok(), VOLUMES, ok(), VOLUMES, ok(), VOLUMES, ok())
-        c = SystemControl(runner=fake)
-        self.assertEqual(c.set_volume(direction="up")["level"], 63)
-        self.assertEqual(c.set_volume(direction="down")["level"], 43)
-        self.assertEqual(c.set_volume(direction="mute")["raw"], 0)
-        self.assertEqual(c.set_volume(direction="unmute")["level"], 50)
-
-    def test_other_stream(self):
-        fake = FakeRunner(VOLUMES, ok())
-        c = SystemControl(runner=fake)
-        result = c.set_volume(100, stream="call")
-        self.assertEqual(result["raw"], 7)
-        self.assertEqual(fake.calls[1], ["termux-volume", "call", "7"])
-
-    def test_dict_shaped_payload(self):
-        payload = {"music": {"volume": 4, "max_volume": 10}}
-        fake = FakeRunner(payload, ok())
-        c = SystemControl(runner=fake)
-        self.assertEqual(c.set_volume(50)["raw"], 5)
-
     def test_validation_errors(self):
-        c = SystemControl(runner=FakeRunner(VOLUMES, VOLUMES, VOLUMES))
+        c = SystemControl(key_sender=lambda vk: True, platform_name="Windows")
         self.assertIn("unknown audio stream", c.set_volume(50, stream="alarm")["error"])
-        self.assertIn("invalid volume level", SystemControl(runner=FakeRunner(VOLUMES)).set_volume("loud")["error"])
-        self.assertIn("invalid volume direction", SystemControl(runner=FakeRunner(VOLUMES)).set_volume(direction="sideways")["error"])
-        self.assertIn("needs a level", SystemControl(runner=FakeRunner(VOLUMES)).set_volume()["error"])
+        self.assertIn("invalid volume level", c.set_volume("loud")["error"])
+        self.assertIn("invalid volume direction", c.set_volume(direction="sideways")["error"])
+        self.assertIn("needs a level", c.set_volume()["error"])
 
-    def test_read_and_write_failures(self):
-        self.assertFalse(SystemControl(runner=FakeRunner(err("no termux-api"))).set_volume(50)["ok"])
-        self.assertFalse(SystemControl(runner=FakeRunner(VOLUMES, err("denied"))).set_volume(50)["ok"])
-        self.assertFalse(SystemControl(runner=FakeRunner("[]")).set_volume(50)["ok"])
+    def test_linux_mixer(self):
+        runner = FakeRunner(CommandResult(code=0))
+        c = SystemControl(runner=runner, platform_name="Linux")
+        result = c.set_volume(40)
+        self.assertTrue(result["ok"])
+        self.assertEqual(runner.calls[0][0], "pactl")
 
+    def test_key_sender_failure_is_contained(self):
+        def broken(vk):
+            raise OSError("no keys")
 
-# --------------------------------------------------------------------------- #
-# Wi-Fi
-# --------------------------------------------------------------------------- #
+        c = SystemControl(key_sender=broken, platform_name="Windows")
+        result = c.set_volume(55)
+        self.assertFalse(result["ok"])
+        self.assertIn("volume", result["error"])
+
 
 class TestWifi(unittest.TestCase):
-    def test_on_off(self):
-        fake = FakeRunner(ok(), ok())
-        c = SystemControl(runner=fake)
+    def test_status_connected(self):
+        runner = FakeRunner("    State : connected\n    SSID : home")
+        result = SystemControl(runner=runner, platform_name="Windows").wifi_status()
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["connected"])
+
+    def test_toggle_commands(self):
+        runner = FakeRunner(CommandResult(0), CommandResult(0))
+        c = SystemControl(runner=runner, platform_name="Windows")
         self.assertTrue(c.toggle_wifi("on")["ok"])
         self.assertTrue(c.toggle_wifi("off")["ok"])
-        self.assertEqual(fake.calls, [["termux-wifi-enable", "true"], ["termux-wifi-enable", "false"]])
+        self.assertIn("admin=enabled", runner.calls[0])
+        self.assertIn("admin=disabled", runner.calls[1])
 
-    def test_aliases(self):
-        fake = FakeRunner(ok(), ok())
-        c = SystemControl(runner=fake)
-        c.toggle_wifi("চালু")
-        c.toggle_wifi(False)
-        self.assertEqual([call[1] for call in fake.calls], ["true", "false"])
-
-    def test_invalid_and_failure(self):
-        fake = FakeRunner(err("requires root on Android 10+"))
-        c = SystemControl(runner=fake)
+    def test_invalid_and_denied(self):
+        runner = FakeRunner(CommandResult(5, stderr="requires elevation"))
+        c = SystemControl(runner=runner, platform_name="Windows")
         self.assertFalse(c.toggle_wifi("sideways")["ok"])
-        self.assertEqual(fake.calls, [])
+        self.assertEqual(runner.calls, [])
         result = c.toggle_wifi("on")
         self.assertFalse(result["ok"])
-        self.assertIn("requires root", result["error"])
+        self.assertIn("অ্যাডমিন", result["message_bn"])
 
-
-# --------------------------------------------------------------------------- #
-# Contacts
-# --------------------------------------------------------------------------- #
 
 class TestContacts(unittest.TestCase):
     def test_fuzzy_bengali_name_from_banglish(self):
-        c = control(CONTACTS)
-        result = c.find_contact("rahim")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = write_contacts(tmp)
+            c = SystemControl(contacts_path=path, platform_name="Windows")
+            result = c.find_contact("rahim")
         self.assertTrue(result["ok"])
         self.assertIn(result["name"], ("Rahim Uddin", "রহিমা বেগম"))
         self.assertTrue(result["number"])
 
     def test_bengali_script_query(self):
-        result = control(CONTACTS).find_contact("রহিমা")
+        with tempfile.TemporaryDirectory() as tmp:
+            result = SystemControl(contacts_path=write_contacts(tmp), platform_name="Windows").find_contact("রহিমা")
         self.assertTrue(result["ok"])
         self.assertEqual(result["name"], "রহিমা বেগম")
         self.assertEqual(result["number"], "01898765432")
 
-    def test_exact_and_substring(self):
-        c = control(CONTACTS)
-        self.assertEqual(c.find_contact("Karim Sheikh")["name"], "Karim Sheikh")
-        self.assertTrue(c.find_contact("karim")["ok"])
-
     def test_number_match_ignores_country_code(self):
-        c = control(CONTACTS)
-        self.assertEqual(c.find_contact("01712345678")["name"], "Rahim Uddin")
-        self.assertEqual(c.find_contact("+880 171 234 5678")["name"], "Rahim Uddin")
-        self.assertEqual(c.find_contact("০১৮৯৮৭৬৫৪৩২")["name"], "রহিমা বেগম")
+        with tempfile.TemporaryDirectory() as tmp:
+            c = SystemControl(contacts_path=write_contacts(tmp), platform_name="Windows")
+            self.assertEqual(c.find_contact("01712345678")["name"], "Rahim Uddin")
+            self.assertEqual(c.find_contact("+880 171 234 5678")["name"], "Rahim Uddin")
+            self.assertEqual(c.find_contact("০১৮৯৮৭৬৫৪৩২")["name"], "রহিমা বেগম")
 
     def test_unknown_number_and_name(self):
-        c = control(CONTACTS, CONTACTS)
-        self.assertIn("no contact with number", c.find_contact("01700000000")["error"])
-        self.assertIn("not found", c.find_contact("Zulfikar Ali Bhutto")["error"])
+        with tempfile.TemporaryDirectory() as tmp:
+            c = SystemControl(contacts_path=write_contacts(tmp), platform_name="Windows")
+            self.assertIn("no contact with number", c.find_contact("01700000000")["error"])
+            self.assertIn("not found", c.find_contact("Zulfikar Ali Bhutto")["error"])
 
-    def test_empty_query(self):
-        self.assertFalse(control(CONTACTS).find_contact("   ")["ok"])
+    def test_empty_query_and_missing_file(self):
+        self.assertFalse(control().find_contact("   ")["ok"])
+        with tempfile.TemporaryDirectory() as tmp:
+            c = SystemControl(contacts_path=Path(tmp) / "missing.json", platform_name="Windows")
+            self.assertFalse(c.find_contact("rahim")["ok"])
 
-    def test_cache_avoids_second_lookup(self):
-        fake = FakeRunner(CONTACTS)
-        c = SystemControl(runner=fake)
-        c.find_contact("rahim")
-        c.find_contact("karim")
-        self.assertEqual(len(fake.calls), 1)
-
-    def test_cache_expiry(self):
-        fake = FakeRunner(CONTACTS, CONTACTS)
-        c = SystemControl(runner=fake, contact_ttl=0.0)
-        c.find_contact("rahim")
-        c.find_contact("rahim")
-        self.assertEqual(len(fake.calls), 2)
-
-    def test_missing_or_broken_contact_list(self):
-        self.assertFalse(control(CommandResult(code=127, error="termux-contact-list not found")).find_contact("x")["ok"])
-        self.assertFalse(control("not json").find_contact("x")["ok"])
-        self.assertFalse(control("[]").find_contact("x")["ok"])
+    def test_cache_and_expiry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = write_contacts(tmp)
+            c = SystemControl(contacts_path=path, platform_name="Windows")
+            c.find_contact("rahim")
+            c.find_contact("karim")
+            self.assertEqual(len(c._contacts), 3)
+            c.contact_ttl = 0.0
+            path.write_text("[]", encoding="utf-8")
+            self.assertEqual(c.list_contacts(), [])   # re-read after expiry
 
     def test_resolve_contact(self):
-        c = control(CONTACTS)
-        spoken = c.resolve_contact(contact="Rahim", number="০১৯৯৯৯৯৯৯৯৯")
-        self.assertEqual(spoken["number"], "01999999999")
-        self.assertEqual(spoken["source"], "spoken")
+        with tempfile.TemporaryDirectory() as tmp:
+            c = SystemControl(contacts_path=write_contacts(tmp), platform_name="Windows")
+            spoken = c.resolve_contact(contact="Rahim", number="০১৯৯৯৯৯৯৯৯৯")
+            self.assertEqual(spoken["number"], "01999999999")
+            self.assertEqual(spoken["source"], "spoken")
 
-        resolved = c.resolve_contact(contact="Karim")
-        self.assertEqual(resolved["number"], "01911122233")
-        self.assertEqual(resolved["source"], "contacts")
+            resolved = c.resolve_contact(contact="Karim")
+            self.assertEqual(resolved["number"], "01911122233")
+            self.assertEqual(resolved["source"], "contacts")
 
-        self.assertFalse(c.resolve_contact()["ok"])
+            self.assertFalse(c.resolve_contact()["ok"])
 
 
 if __name__ == "__main__":  # pragma: no cover
