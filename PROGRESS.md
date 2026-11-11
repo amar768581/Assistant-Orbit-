@@ -488,3 +488,24 @@ python main.py once "টর্চ জালাও"        # one command
 python main.py                        # 24/7 daemon + Bengali CLI
 python main.py daemon --no-cli        # headless (Termux:Boot)
 ```
+
+## 🪟 Windows PC Migration (November 2026) — COMPLETE
+
+ORBIT now runs natively on Windows 10/11. Termux, mpv and Android binaries are
+no longer required for the PC feature set.
+
+| # | File | Change | Status |
+|---|------|--------|--------|
+| 1 | `pc_automation.py` | default browser, Explorer folders, desktop apps, psutil health | ✅ done |
+| 2 | `system_control.py` | psutil battery/health, media-key volume, netsh Wi-Fi, `~/.orbit/contacts.json` | ✅ done |
+| 3 | `voice_engine.py` | edge-tts + pygame playback, temp MP3 deleted, SAPI fallback, sounddevice STT | ✅ done |
+| 4 | `brain.py` | `open_website`, `open_folder`, `pc_health` actions + Windows prompt | ✅ done |
+| 5 | `actions.py` | routes PC actions and keeps the financial guard | ✅ done |
+| 6 | `main.py` | Windows wake-lock, chat default, `health`, PC doctor rows, `~/.orbit/orbit.log` | ✅ done |
+| 7 | `requirements.txt` | psutil, edge-tts, pygame, groq, pydantic, sounddevice, soundfile | ✅ done |
+| 8 | `install.ps1`, `run_orbit.bat` | one-click Windows setup and launcher (replaces `install.sh`) | ✅ done |
+| 9 | `README.md` | Windows-first bilingual documentation | ✅ done |
+
+**Verification:** `python -m unittest discover -s tests -t .` → **441 tests, OK**.
+All Termux runtime calls were replaced; optional phone actions still use ADB and
+are skipped on Windows.

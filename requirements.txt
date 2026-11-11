@@ -1,11 +1,8 @@
-# ORBIT — Python dependencies (Termux: pkg install python mpv termux-api)
-# Install with:  pip install -r requirements.txt
-#
-# Android system binaries ORBIT relies on (not installable via pip):
-#   pkg install mpv termux-api          # playback + microphone + device control
-#   termux-setup-storage                # optional, only for saving photos/audio
+# ORBIT — Windows PC dependencies
+# Install with:  python -m pip install -r requirements.txt
+# (or run .\install.ps1, which also creates .env and ~/.orbit)
 
-# HTTP client for the Gemini, Groq Whisper and Telegram REST APIs.
+# HTTP client for Gemini, Groq and the Telegram REST APIs.
 requests>=2.31,<3
 
 # Loads .env. config.py still works without it (built-in fallback parser).
@@ -14,5 +11,18 @@ python-dotenv>=1.0,<2
 # Natural Bengali neural TTS (bn-IN-BashkarNeural / bn-IN-TanishaaNeural).
 edge-tts>=6.1,<8
 
-# Optional, Phase 3 (Telegram bridge) — install when telegram_bot.py lands:
-# python-telegram-bot>=21,<23
+# In-process audio playback with no external media-player window.
+pygame>=2.5,<3
+
+# CPU, RAM, disk, battery and process health.
+psutil>=5.9,<8
+
+# Optional Groq SDK for future provider work (brain.py uses requests today).
+groq>=0.9,<2
+
+# Request/response models used by future PC tooling.
+pydantic>=2.5,<3
+
+# Microphone capture for `python main.py voice` (optional but recommended).
+sounddevice>=0.4.6,<1
+soundfile>=0.12,<1
