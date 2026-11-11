@@ -1,20 +1,22 @@
 """
-voice_engine.py — ORBIT's mouth and ears inside Termux.
+voice_engine.py — ORBIT's mouth and ears on the PC.
 
 TTS (natural Bengali):
-    edge-tts (bn-IN-BashkarNeural / bn-IN-TanishaaNeural) -> mp3
-    playback chain:  mpv  ->  termux-media-player  ->  termux-tts-speak
+    edge-tts (bn-IN-BashkarNeural / bn-IN-TanishaaNeural) -> temporary mp3
+    playback with pygame.mixer (no external window / media player popup)
+    fallback: Windows SAPI through PowerShell
+    the temporary mp3 is always deleted after speaking
 
 STT:
-    termux-microphone-record  ->  m4a  ->  Groq Whisper (whisper-large-v3-turbo)
+    sounddevice + soundfile (optional) -> wav -> Groq Whisper
 
-Every device binary is optional: missing tools are logged and ORBIT keeps
-running (important for desktop tests and for a half-installed Termux setup).
+Every dependency is optional and imported lazily: a missing package becomes a
+clean ``last_error`` and ORBIT keeps running.
 
     from voice_engine import VoiceEngine
     v = VoiceEngine()
     v.speak("নমস্কার, আমি অরবিট।")
-    text = v.listen(seconds=6)      # "" when the mic is unavailable
+    text = v.listen(seconds=6)
 """
 
 from __future__ import annotations
@@ -22,26 +24,20 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import shutil
-import subprocess
 import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 try:
     import requests
 except ImportError:  # pragma: no cover
     requests = None  # type: ignore[assignment]
 
-from config import BASE_DIR, Settings, settings as default_settings
+from config import Settings, settings as default_settings
 
 log = logging.getLogger("orbit.voice")
-
-# --------------------------------------------------------------------------- #
-# Constants
-# --------------------------------------------------------------------------- #
 
 VOICE_MALE = "bn-IN-BashkarNeural"
 VOICE_FEMALE = "bn-IN-TanishaaNeural"
@@ -49,13 +45,14 @@ DEFAULT_VOICE = VOICE_MALE
 
 GROQ_TRANSCRIBE_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 WHISPER_MODEL = "whisper-large-v3-turbo"
-WHISPER_LANGUAGE = "bn"  # ISO-639-1; Whisper still tolerates English in the audio
+WHISPER_LANGUAGE = "bn"
 
-AUDIO_DIR = BASE_DIR / "audio" / "tts"
-RECORD_DIR = BASE_DIR / "audio" / "recordings"
+# Temporary TTS files live outside the repo and are deleted after playback.
+AUDIO_DIR = Path(tempfile.gettempdir()) / "orbit_tts"
+RECORD_DIR = Path.home() / ".orbit" / "recordings"
 
 MAX_RECORD_SECONDS = 30.0
-SPEECH_TIMEOUT_PAD = 20.0  # extra seconds allowed for mpv playback
+PLAYBACK_PAD = 20.0
 
 MIME_BY_SUFFIX = {
     ".m4a": "audio/mp4",
@@ -66,18 +63,12 @@ MIME_BY_SUFFIX = {
     ".ogg": "audio/ogg",
     ".opus": "audio/opus",
     ".flac": "audio/flac",
-    ".3gp": "audio/3gpp",
-    ".amr": "audio/amr",
 }
 
 
 class VoiceError(RuntimeError):
     """Raised when a voice operation cannot be completed."""
 
-
-# --------------------------------------------------------------------------- #
-# Helpers
-# --------------------------------------------------------------------------- #
 
 def _run_coroutine(coro: Any) -> Any:
     """Run an awaitable from sync code, even if a loop is already running."""
@@ -91,7 +82,7 @@ def _run_coroutine(coro: Any) -> Any:
     def _target() -> None:
         try:
             box["value"] = asyncio.run(coro)
-        except BaseException as exc:  # noqa: BLE001 - re-raised in caller thread
+        except BaseException as exc:  # noqa: BLE001
             box["error"] = exc
 
     thread = threading.Thread(target=_target, daemon=True)
@@ -102,20 +93,22 @@ def _run_coroutine(coro: Any) -> Any:
     return box.get("value")
 
 
-def _binary(name: str) -> Optional[str]:
-    """Return the absolute path of a Termux binary, if present."""
-    return shutil.which(name)
+def _module_available(name: str) -> bool:
+    import importlib.util
+
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
 
 
-def _run(cmd: List[str], timeout: float) -> Tuple[int, str]:
-    """Run a command capturing output; never raises."""
+def _run(cmd: list, timeout: float) -> Tuple[int, str]:
+    """Run a helper command capturing output; never raises."""
+    import subprocess
+
     try:
         completed = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
+            cmd, capture_output=True, text=True, timeout=timeout, check=False
         )
         output = (completed.stdout or "").strip()
         err = (completed.stderr or "").strip()
@@ -123,13 +116,12 @@ def _run(cmd: List[str], timeout: float) -> Tuple[int, str]:
     except subprocess.TimeoutExpired:
         log.warning("Command timed out after %.0fs: %s", timeout, cmd[0])
         return 124, "timeout"
-    except Exception as exc:  # binary vanished, permission problem, ...
+    except Exception as exc:
         log.warning("Command failed (%s): %s", cmd[0], exc)
         return 1, str(exc)
 
 
 def _prune(directory: Path, keep: int = 20) -> None:
-    """Keep the audio cache small — Termux storage fills up fast."""
     try:
         files = sorted(
             (p for p in directory.glob("*") if p.is_file()),
@@ -138,16 +130,12 @@ def _prune(directory: Path, keep: int = 20) -> None:
         )
         for stale in files[keep:]:
             stale.unlink(missing_ok=True)
-    except Exception as exc:  # pragma: no cover - filesystem oddities
+    except Exception as exc:  # pragma: no cover
         log.debug("Could not prune %s: %s", directory, exc)
 
 
-# --------------------------------------------------------------------------- #
-# VoiceEngine
-# --------------------------------------------------------------------------- #
-
 class VoiceEngine:
-    """Bengali TTS + Groq Whisper STT for Termux."""
+    """Bengali TTS + Groq Whisper STT for a Windows PC."""
 
     def __init__(
         self,
@@ -158,21 +146,26 @@ class VoiceEngine:
         timeout: float = 60.0,
         audio_dir: Path = AUDIO_DIR,
         record_dir: Path = RECORD_DIR,
+        mixer: Any = None,
+        sapi: Optional[Callable[[str], bool]] = None,
+        recorder: Optional[Callable[..., Optional[Path]]] = None,
     ) -> None:
         self.settings = settings or default_settings
         self.voice = voice or DEFAULT_VOICE
         if language and language.strip().lower() == "auto":
-            self.language = "auto"  # let Whisper auto-detect (mixed bn/en)
+            self.language = "auto"
         elif language:
             self.language = self._whisper_language(language)
         else:
-            self.language = self._whisper_language(self.settings.language)
+            self.language = self._whisper_language(getattr(self.settings, "language", "bn-IN"))
         self.timeout = timeout
         self._session = session
         self.audio_dir = Path(audio_dir)
         self.record_dir = Path(record_dir)
+        self._mixer = mixer
+        self._sapi = sapi
+        self._recorder = recorder
 
-        # Observability for the caller / Telegram bridge.
         self.last_tts_engine: Optional[str] = None
         self.last_audio_path: Optional[Path] = None
         self.last_error: Optional[str] = None
@@ -183,11 +176,10 @@ class VoiceEngine:
             except Exception as exc:  # pragma: no cover
                 log.warning("Cannot create %s: %s", directory, exc)
 
-    # -- capability probing -------------------------------------------------
+    # -- capability probing ------------------------------------------------- #
 
     @staticmethod
     def _whisper_language(language: str) -> str:
-        """'bn-IN' -> 'bn'; anything unrecognised falls back to Bengali."""
         code = (language or "").strip().lower().replace("_", "-")
         if not code:
             return WHISPER_LANGUAGE
@@ -196,21 +188,21 @@ class VoiceEngine:
 
     @property
     def can_play(self) -> bool:
-        return any(_binary(name) for name in ("mpv", "termux-media-player", "termux-tts-speak"))
+        return self._mixer is not None or _module_available("pygame")
 
     @property
     def can_record(self) -> bool:
-        return _binary("termux-microphone-record") is not None
+        return self._recorder is not None or (
+            _module_available("sounddevice") and _module_available("soundfile")
+        )
 
     def diagnostics(self) -> Dict[str, Optional[str]]:
-        """Which pieces of the voice stack this device actually has."""
         return {
-            "edge-tts": "python-package",
-            "mpv": _binary("mpv"),
-            "termux-media-player": _binary("termux-media-player"),
-            "termux-tts-speak": _binary("termux-tts-speak"),
-            "termux-microphone-record": _binary("termux-microphone-record"),
-            "groq_key": "<set>" if self.settings.groq_api_key else None,
+            "edge-tts": "installed" if _module_available("edge_tts") else None,
+            "pygame": "installed" if self.can_play else None,
+            "sapi": "Windows" if os.name == "nt" else None,
+            "sounddevice": "installed" if _module_available("sounddevice") else None,
+            "groq_key": "<set>" if getattr(self.settings, "groq_api_key", "") else None,
         }
 
     # ------------------------------------------------------------------ #
@@ -223,12 +215,11 @@ class VoiceEngine:
         voice: Optional[str] = None,
         rate: str = "+0%",
         volume: str = "+0%",
-        fallback_to_termux: bool = True,
+        fallback_to_sapi: bool = True,
     ) -> bool:
-        """Say ``text`` out loud. Returns True if something was actually played.
+        """Say ``text`` out loud. Returns True if audio actually played.
 
-        Order: edge-tts MP3 + mpv -> edge-tts + termux-media-player ->
-        termux-tts-speak. Never raises; failures land in ``self.last_error``.
+        The synthesized file is always removed, even when playback fails.
         """
         clean = (text or "").strip()
         if not clean:
@@ -238,18 +229,21 @@ class VoiceEngine:
         self.last_error = None
         self.last_tts_engine = None
 
-        # 1) Natural Bengali neural voice.
         audio = self.synthesize(clean, voice=voice, rate=rate, volume=volume)
         if audio is not None:
             self.last_audio_path = audio
-            if self._play_file(audio):
-                return True
-            log.warning("Could not play %s with any local player", audio)
+            try:
+                if self._play_file(audio):
+                    return True
+                log.warning("Could not play %s", audio)
+            finally:
+                try:
+                    audio.unlink(missing_ok=True)
+                except Exception as exc:  # pragma: no cover
+                    log.debug("Could not delete %s: %s", audio, exc)
 
-        # 2) Android's built-in engine (robotic but always there).
-        if fallback_to_termux:
-            if self._speak_termux(clean):
-                return True
+        if fallback_to_sapi and self._speak_sapi(clean):
+            return True
 
         log.error("TTS failed for %d characters: %s", len(clean), self.last_error)
         return False
@@ -261,34 +255,27 @@ class VoiceEngine:
         rate: str = "+0%",
         volume: str = "+0%",
     ) -> Optional[Path]:
-        """Render ``text`` to an MP3 with edge-tts. Returns the path or None."""
+        """Render ``text`` to a temporary MP3 with edge-tts."""
         try:
-            import edge_tts  # imported lazily: optional on desktop
+            import edge_tts  # imported lazily: optional dependency
         except ImportError:
             self.last_error = "edge-tts not installed (pip install edge-tts)"
-            log.warning("%s — falling back to termux-tts-speak", self.last_error)
+            log.warning(self.last_error)
             return None
 
         selected = voice or self.voice
         try:
             self.audio_dir.mkdir(parents=True, exist_ok=True)
             target = self.audio_dir / f"orbit_{int(time.time() * 1000)}.mp3"
-            communicate = edge_tts.Communicate(
-                text,
-                selected,
-                rate=rate,
-                volume=volume,
-            )
+            communicate = edge_tts.Communicate(text, selected, rate=rate, volume=volume)
             _run_coroutine(communicate.save(str(target)))
 
             if not target.is_file() or target.stat().st_size < 512:
                 self.last_error = "edge-tts produced an empty file"
-                log.warning("%s (voice=%s)", self.last_error, selected)
                 target.unlink(missing_ok=True)
                 return None
 
             _prune(self.audio_dir)
-            log.debug("edge-tts wrote %s (%d bytes)", target.name, target.stat().st_size)
             return target
         except Exception as exc:
             self.last_error = f"edge-tts failed: {exc}"
@@ -296,128 +283,135 @@ class VoiceEngine:
             return None
 
     def _play_file(self, path: Path) -> bool:
-        """Play a local audio file, trying mpv then termux-media-player."""
-        budget = min(180.0, 15.0 + path.stat().st_size / 4000.0) + SPEECH_TIMEOUT_PAD
+        """Play with pygame.mixer, blocking until done (no external window)."""
+        mixer = self._mixer
+        if mixer is None:
+            try:
+                import pygame.mixer as mixer  # type: ignore
+            except Exception as exc:
+                self.last_error = f"pygame is not installed (pip install pygame): {exc}"
+                log.warning(self.last_error)
+                return False
+            self._mixer = mixer
 
-        mpv = _binary("mpv")
-        if mpv:
+        budget = min(180.0, 15.0 + path.stat().st_size / 4000.0) + PLAYBACK_PAD
+        try:
+            if not mixer.get_init():
+                mixer.init()
+            music = mixer.music
+            music.load(str(path))
+            music.play()
+            deadline = time.monotonic() + budget
+            while music.get_busy() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            music.stop()
+            if hasattr(music, "unload"):
+                music.unload()
+            self.last_tts_engine = "edge-tts+pygame"
+            log.info("Spoke via pygame (%s)", path.name)
+            return True
+        except Exception as exc:
+            self.last_error = f"pygame playback failed: {exc}"
+            log.warning(self.last_error)
+            try:
+                mixer.music.stop()
+            except Exception:
+                pass
+            return False
+
+    def _speak_sapi(self, text: str) -> bool:
+        """Windows fallback that never writes a media file for playback."""
+        if self._sapi is not None:
+            try:
+                ok = bool(self._sapi(text))
+            except Exception as exc:
+                self.last_error = f"SAPI failed: {exc}"
+                return False
+            if ok:
+                self.last_tts_engine = "sapi"
+            return ok
+
+        if os.name != "nt":
+            return False
+
+        script_path: Optional[Path] = None
+        try:
+            self.audio_dir.mkdir(parents=True, exist_ok=True)
+            script_path = self.audio_dir / f"say_{int(time.time() * 1000)}.txt"
+            script_path.write_text(text, encoding="utf-8")
+            command = (
+                "Add-Type -AssemblyName System.Speech; "
+                f"$t = Get-Content -Raw -LiteralPath '{script_path}'; "
+                "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.Speak($t)"
+            )
             code, output = _run(
-                [mpv, "--no-video", "--really-quiet", "--no-terminal", str(path)],
-                timeout=budget,
+                ["powershell", "-NoProfile", "-Command", command],
+                timeout=min(180.0, 10.0 + len(text) / 6.0),
             )
             if code == 0:
-                self.last_tts_engine = "mpv"
-                log.info("Spoke via mpv (%s)", path.name)
+                self.last_tts_engine = "sapi"
                 return True
-            log.warning("mpv exited %s: %s", code, output[:200])
-            self.last_error = f"mpv failed: {output[:200]}"
-
-        player = _binary("termux-media-player")
-        if player:
-            code, output = _run([player, "play", str(path)], timeout=budget)
-            if code == 0:
-                self.last_tts_engine = "termux-media-player"
-                log.info("Spoke via termux-media-player (%s)", path.name)
-                return True
-            log.warning("termux-media-player exited %s: %s", code, output[:200])
-            self.last_error = f"termux-media-player failed: {output[:200]}"
-
-        if not mpv and not player:
-            self.last_error = "no audio player found (pkg install mpv / termux-api)"
-        return False
-
-    def _speak_termux(self, text: str) -> bool:
-        binary = _binary("termux-tts-speak")
-        if not binary:
-            missing = "termux-tts-speak not found (pkg install termux-api)"
-            self.last_error = f"{self.last_error}; {missing}" if self.last_error else missing
+            self.last_error = f"SAPI failed: {output[:200]}"
             return False
-        code, output = _run(
-            [binary, "-l", self.settings.language or "bn-IN", text],
-            timeout=min(180.0, 10.0 + len(text) / 6.0),
-        )
-        if code == 0:
-            self.last_tts_engine = "termux-tts-speak"
-            log.info("Spoke via termux-tts-speak")
-            return True
-        log.warning("termux-tts-speak exited %s: %s", code, output[:200])
-        self.last_error = f"termux-tts-speak failed: {output[:200]}"
-        return False
+        except Exception as exc:
+            self.last_error = f"SAPI failed: {exc}"
+            return False
+        finally:
+            if script_path is not None:
+                script_path.unlink(missing_ok=True)
 
     def stop_speaking(self) -> None:
-        """Stop anything currently playing."""
-        player = _binary("termux-media-player")
-        if player:
-            _run([player, "stop"], timeout=10)
-        mpv = _binary("mpv")
-        if mpv:
-            # mpv is blocking per call, so a best-effort remote stop is enough.
-            _run(["pkill", "-f", "mpv --no-video"], timeout=5)
+        """Stop pygame playback immediately."""
+        try:
+            if self._mixer is not None:
+                self._mixer.music.stop()
+        except Exception as exc:  # pragma: no cover
+            log.debug("stop_speaking: %s", exc)
 
     # ------------------------------------------------------------------ #
     # STT
     # ------------------------------------------------------------------ #
 
     def record(self, seconds: float = 6.0, path: Optional[Path] = None) -> Optional[Path]:
-        """Record from the microphone with termux-microphone-record."""
-        binary = _binary("termux-microphone-record")
-        if not binary:
-            self.last_error = "termux-microphone-record not found (pkg install termux-api)"
+        """Record microphone audio to a WAV file (sounddevice + soundfile)."""
+        duration = max(1.0, min(float(seconds), MAX_RECORD_SECONDS))
+        target = Path(path) if path else (
+            self.record_dir / f"mic_{int(time.time() * 1000)}.wav"
+        )
+
+        if self._recorder is not None:
+            try:
+                recorded = self._recorder(duration, target)
+                return Path(recorded) if recorded else None
+            except Exception as exc:
+                self.last_error = f"recording failed: {exc}"
+                return None
+
+        if not (_module_available("sounddevice") and _module_available("soundfile")):
+            self.last_error = (
+                "মাইক্রোফোন সাপোর্ট নেই — pip install sounddevice soundfile"
+            )
             log.warning(self.last_error)
             return None
 
-        duration = max(1.0, min(float(seconds), MAX_RECORD_SECONDS))
         try:
+            import sounddevice as sd  # type: ignore
+            import soundfile as sf  # type: ignore
+
             self.record_dir.mkdir(parents=True, exist_ok=True)
-            target = Path(path) if path else (
-                self.record_dir / f"mic_{int(time.time() * 1000)}.m4a"
+            sample_rate = 16000
+            audio = sd.rec(
+                int(duration * sample_rate), samplerate=sample_rate, channels=1
             )
-            target.unlink(missing_ok=True)
-
-            process = subprocess.Popen(
-                [
-                    binary,
-                    "-f", str(target),
-                    "-l", str(int(round(duration))),
-                    "-e", "aac",
-                    "-b", "128000",
-                ],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-
-            started = time.monotonic()
-            deadline = started + duration + 8.0
-            while time.monotonic() < deadline:
-                if process.poll() is not None:
-                    break
-                ready = target.is_file() and target.stat().st_size > 1024
-                if ready and time.monotonic() - started >= duration:
-                    _run([binary, "-q"], timeout=5)  # graceful stop
-                    break
-                time.sleep(0.2)
-
-            try:
-                process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                process.terminate()
-                try:
-                    process.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-
-            if not target.is_file() or target.stat().st_size < 1024:
+            sd.wait()
+            sf.write(str(target), audio, sample_rate)
+            if not target.is_file() or target.stat().st_size < 512:
                 self.last_error = "recording produced no audio (mic permission?)"
-                log.warning(self.last_error)
                 return None
-
-            _prune(self.record_dir)
-            log.info("Recorded %ss -> %s (%d bytes)", int(duration), target.name, target.stat().st_size)
             return target
         except Exception as exc:
             self.last_error = f"recording failed: {exc}"
-            log.warning("Recording failed: %s", exc)
+            log.warning(self.last_error)
             return None
 
     def transcribe(self, audio_path: Path, language: Optional[str] = None) -> str:
@@ -425,25 +419,20 @@ class VoiceEngine:
         path = Path(audio_path)
         if not path.is_file():
             raise VoiceError(f"audio file not found: {path}")
-        if not self.settings.groq_api_key:
+        if not getattr(self.settings, "groq_api_key", ""):
             raise VoiceError("GROQ_API_KEY missing — cannot transcribe (see .env.example)")
         if requests is None and self._session is None:
             raise VoiceError("requests is not installed (pip install -r requirements.txt)")
 
         model = os.environ.get("WHISPER_MODEL", WHISPER_MODEL)
         lang = (language or self.language or WHISPER_LANGUAGE).lower()
-        data = {
-            "model": model,
-            "response_format": "json",
-            "temperature": "0",
-        }
+        data = {"model": model, "response_format": "json", "temperature": "0"}
         if lang and lang != "auto":
             data["language"] = lang
-        if "prompt" not in data:
-            data["prompt"] = "বাংলা বা Banglish কথ্য ভাষা।"  # nudges Bengali output
+        data["prompt"] = "বাংলা বা Banglish কথ্য ভাষা।"
 
         headers = {"Authorization": f"Bearer {self.settings.groq_api_key}"}
-        mime = MIME_BY_SUFFIX.get(path.suffix.lower(), "audio/mp4")
+        mime = MIME_BY_SUFFIX.get(path.suffix.lower(), "audio/wav")
 
         last_exc: Optional[Exception] = None
         for attempt in range(3):
@@ -473,7 +462,6 @@ class VoiceEngine:
                     return text
 
                 if response.status_code in (429, 500, 502, 503, 504) and attempt < 2:
-                    log.warning("Groq STT HTTP %s, retrying", response.status_code)
                     time.sleep(1.5 * (attempt + 1))
                     continue
 
@@ -502,18 +490,16 @@ class VoiceEngine:
             return ""
 
         try:
-            text = self.transcribe(audio, language=language)
-            return text
+            return self.transcribe(audio, language=language)
         except VoiceError as exc:
             self.last_error = str(exc)
             log.error("Transcription failed: %s", exc)
             return ""
         finally:
             if not keep_audio:
-                audio.unlink(missing_ok=True)
+                Path(audio).unlink(missing_ok=True)
 
     def listen_and_confirm(self, seconds: float = 6.0) -> str:
-        """Record, transcribe, and echo the text back aloud for confirmation."""
         text = self.listen(seconds=seconds)
         if text:
             self.speak(text)
