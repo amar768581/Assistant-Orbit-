@@ -40,6 +40,32 @@ class FakeControl:
         return {"ok": True, "state": state}
 
 
+class FakePc:
+    def __init__(self):
+        self.calls = []
+
+    def open_app(self, name):
+        self.calls.append(("open_app", name))
+        return {"ok": True, "app": name, "message_bn": f"বস, {name} খুলছি।"}
+
+    def open_website(self, url):
+        self.calls.append(("open_website", url))
+        return {"ok": True, "url": url, "message_bn": f"বস, {url} খুলছি।"}
+
+    def open_folder(self, path):
+        self.calls.append(("open_folder", path))
+        return {"ok": True, "path": path, "message_bn": "বস, ফোল্ডার খুলছি।"}
+
+    def system_health(self):
+        self.calls.append(("system_health",))
+        return {
+            "ok": True,
+            "cpu_percent": 12.0,
+            "ram_percent": 40.0,
+            "summary_bn": "বস, সিপিইউ ১২ শতাংশ, সব ঠিক আছে।",
+        }
+
+
 class FakeComm:
     def __init__(self, ok=True, message_bn=None):
         self.ok = ok
@@ -143,6 +169,7 @@ def make(**kwargs):
     control = kwargs.pop("control", FakeControl())
     comm = kwargs.pop("comm", FakeComm())
     adb = kwargs.pop("adb", FakeAdb())
+    pc = kwargs.pop("pc", FakePc())
     briefing = kwargs.pop("briefing", FakeBriefing())
     security = kwargs.pop("security", FakeSecurity())
     receptionist = kwargs.pop("receptionist", FakeReceptionist())
@@ -152,6 +179,7 @@ def make(**kwargs):
         control=control,
         comm=comm,
         adb=adb,
+        pc=pc,
         briefing=briefing,
         security=security,
         receptionist=receptionist,
@@ -159,7 +187,7 @@ def make(**kwargs):
         memory=memory,
         **kwargs,
     ), {
-        "control": control, "comm": comm, "adb": adb, "briefing": briefing,
+        "control": control, "comm": comm, "adb": adb, "pc": pc, "briefing": briefing,
         "security": security, "receptionist": receptionist, "voice": voice, "memory": memory,
     }
 
@@ -176,7 +204,7 @@ class TestContract(unittest.TestCase):
     def test_every_whitelisted_action_has_a_handler(self):
         dispatcher, _ = make()
         self.assertEqual(set(dispatcher.handlers()), set(SUPPORTED_ACTIONS))
-        self.assertEqual(len(SUPPORTED_ACTIONS), 13)
+        self.assertEqual(len(SUPPORTED_ACTIONS), 16)
 
     def test_success_reply_always_addresses_boss(self):
         dispatcher, _ = make()
@@ -284,8 +312,28 @@ class TestRouting(unittest.TestCase):
         dispatcher, fakes = make()
         result = dispatcher.execute(decision("open_app", {"app": "ইউটিউব"}))
         self.assertTrue(result["ok"])
-        self.assertEqual(fakes["adb"].calls[0], ("open_app", "ইউটিউব"))
+        self.assertEqual(fakes["pc"].calls[0], ("open_app", "ইউটিউব"))
         self.assertIn("ইউটিউব", result["reply_bn"])
+
+    def test_open_website(self):
+        dispatcher, fakes = make()
+        result = dispatcher.execute(decision("open_website", {"url": "github.com"}))
+        self.assertTrue(result["ok"])
+        self.assertEqual(fakes["pc"].calls[0], ("open_website", "github.com"))
+        self.assertIn("github.com", result["reply_bn"])
+
+    def test_open_folder(self):
+        dispatcher, fakes = make()
+        result = dispatcher.execute(decision("open_folder", {"path": "~/Downloads"}))
+        self.assertTrue(result["ok"])
+        self.assertEqual(fakes["pc"].calls[0], ("open_folder", "~/Downloads"))
+
+    def test_pc_health(self):
+        dispatcher, fakes = make()
+        result = dispatcher.execute(decision("pc_health"))
+        self.assertTrue(result["ok"])
+        self.assertEqual(fakes["pc"].calls[0], ("system_health",))
+        self.assertIn("সিপিইউ", result["reply_bn"])
 
     def test_read_screen_prompt(self):
         dispatcher, fakes = make()

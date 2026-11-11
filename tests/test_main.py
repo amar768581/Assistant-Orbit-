@@ -69,6 +69,26 @@ class FakeControl:
     def battery_status(self):
         return {"ok": True, "percentage": self.percentage, "message_bn": "ব্যাটারি ঠিক আছে।"}
 
+    def system_health(self):
+        return {"ok": True, "cpu_percent": 12.0, "ram_percent": 40.0,
+                "summary_bn": "বস, সিপিইউ ১২ শতাংশ, সব ঠিক আছে।"}
+
+
+class FakePc:
+    def __init__(self, ok=True):
+        self.ok = ok
+
+    def system_health(self):
+        if not self.ok:
+            return {"ok": False, "error": "psutil নেই"}
+        return {
+            "ok": True,
+            "cpu_percent": 12.0,
+            "ram_percent": 40.0,
+            "disk_free_gb": 210.0,
+            "summary_bn": "বস, সিপিইউ ১২ শতাংশ, সব ঠিক আছে।",
+        }
+
 
 class FakeMemory:
     def __init__(self):
@@ -196,36 +216,38 @@ def make_daemon(**overrides):
 # --------------------------------------------------------------------------- #
 
 class TestWakeLock(unittest.TestCase):
-    def test_acquire_and_release_are_idempotent(self):
-        runner = FakeRunner()
-        lock = WakeLock(settings=FakeSettings(), runner=runner)
+    def test_acquire_and_release_on_windows(self):
+        flags = []
+        lock = WakeLock(settings=FakeSettings(), platform_name="Windows")
+        lock._set_execution_state = lambda value: flags.append(value)
 
         self.assertTrue(lock.acquire()["ok"])
         self.assertTrue(lock.held)
-        self.assertTrue(lock.acquire()["skipped"] == "already held")
-        self.assertEqual(runner.calls, [["termux-wake-lock"]])
+        self.assertEqual(lock.acquire()["skipped"], "already held")
 
         self.assertTrue(lock.release()["ok"])
         self.assertFalse(lock.held)
         self.assertEqual(lock.release()["skipped"], "not held")
-        self.assertEqual(runner.calls, [["termux-wake-lock"], ["termux-wake-unlock"]])
+        self.assertEqual(flags[0], WakeLock.ES_CONTINUOUS | WakeLock.ES_SYSTEM_REQUIRED)
+        self.assertEqual(flags[1], WakeLock.ES_CONTINUOUS)
 
     def test_disabled_by_settings(self):
-        runner = FakeRunner()
-        lock = WakeLock(settings=FakeSettings(wake_lock=False), runner=runner)
+        lock = WakeLock(settings=FakeSettings(wake_lock=False), platform_name="Windows")
         self.assertEqual(lock.acquire()["skipped"], "WAKE_LOCK=false")
-        self.assertEqual(runner.calls, [])
 
-    def test_failed_binary_is_not_held(self):
-        lock = WakeLock(settings=FakeSettings(), runner=FakeRunner(code=127))
-        self.assertFalse(lock.acquire()["ok"])
-        self.assertFalse(lock.held)
+    def test_non_windows_is_a_noop(self):
+        lock = WakeLock(settings=FakeSettings(), platform_name="Linux")
+        result = lock.acquire()
+        self.assertTrue(result["ok"])
+        self.assertTrue(lock.held)
+        self.assertIn("not required", result["skipped"])
 
-    def test_runner_exception_is_swallowed(self):
-        def broken(cmd):
+    def test_failure_is_not_held(self):
+        def broken(value):
             raise OSError("boom")
 
-        lock = WakeLock(settings=FakeSettings(), runner=broken)
+        lock = WakeLock(settings=FakeSettings(), platform_name="Windows")
+        lock._set_execution_state = broken
         self.assertFalse(lock.acquire()["ok"])
         self.assertFalse(lock.held)
 
@@ -458,13 +480,16 @@ class TestDoctor(unittest.TestCase):
             settings=settings,
             memory=memory,
             runner=FakeRunner(devices=True),
-            which=lambda name: f"/data/data/com.termux/files/usr/bin/{name}",
+            which=lambda name: f"/usr/bin/{name}",
+            pc=FakePc(),
         )
 
         self.assertTrue(report["ok"])
         self.assertIn("প্রস্তুত", report["summary"])
         labels = [row["label"] for row in report["rows"]]
-        self.assertIn("ADB", labels)
+        self.assertIn("ADB (optional phone)", labels)
+        self.assertIn("PC Health", labels)
+        self.assertIn("Windows", labels)
         self.assertIn("GEMINI_API_KEY", labels)
         self.assertIn("Banking Security Lock", labels)
         lock = next(row for row in report["rows"] if row["label"] == "Banking Security Lock")
@@ -479,6 +504,7 @@ class TestDoctor(unittest.TestCase):
             memory=FakeMemory(),
             runner=FakeRunner(code=127),
             which=lambda name: None,
+            pc=FakePc(ok=False),
         )
         self.assertFalse(report["ok"])
         warnings = [row for row in report["rows"] if row["status"] == "warn"]
@@ -495,13 +521,17 @@ class TestDoctor(unittest.TestCase):
             memory=BrokenMemory(),
             runner=FakeRunner(),
             which=lambda name: None,
+            pc=FakePc(),
         )
         self.assertFalse(report["ok"])
         row = next(item for item in report["rows"] if item["label"] == "SQLite মেমোরি")
         self.assertEqual(row["status"], "fail")
 
     def test_print_doctor_renders_table(self):
-        report = doctor_report(settings=FakeSettings(), memory=FakeMemory(), runner=FakeRunner(), which=lambda n: None)
+        report = doctor_report(
+            settings=FakeSettings(), memory=FakeMemory(), runner=FakeRunner(),
+            which=lambda n: None, pc=FakePc(),
+        )
         lines = []
         print_doctor(report, out=lines.append)
         self.assertIn("প্রস্তুতি রিপোর্ট", lines[0])
@@ -515,6 +545,7 @@ class TestDoctor(unittest.TestCase):
 class FakeDaemon:
     def __init__(self, result=None):
         self.dispatcher = FakeDispatcher(result)
+        self.control = FakeControl()
         self.voice = FakeVoice()
         self.briefing = FakeBriefing()
         self.started = 0
@@ -538,7 +569,7 @@ class TestCLI(unittest.TestCase):
 
     def test_parser_has_all_commands(self):
         parser = build_parser()
-        for command in ("daemon", "once", "voice", "briefing", "doctor"):
+        for command in ("chat", "daemon", "once", "voice", "briefing", "health", "doctor"):
             self.assertIn(command, parser.format_help())
 
     def test_once_prints_bengali_reply(self):
@@ -592,13 +623,19 @@ class TestCLI(unittest.TestCase):
         self.assertEqual(daemon.shutdowns, 1)
         self.assertIn("ব্যাকগ্রাউন্ডে", lines[0])
 
-    def test_default_command_is_daemon(self):
+    def test_default_command_is_chat(self):
         stop = threading.Event()
         stop.set()
         daemon = FakeDaemon()
-        code, _ = self.run_main(["daemon", "--no-cli"], daemon, stop=stop)
-        self.assertEqual(daemon.started, 1)
+        code, lines = self.run_main([], daemon, stop=stop)
         self.assertEqual(code, 0)
+        self.assertEqual(daemon.started, 0)
+        self.assertTrue(any("Orbit তৈরি" in line for line in lines))
+
+    def test_health_command(self):
+        code, lines = self.run_main(["health"], FakeDaemon())
+        self.assertEqual(code, 0)
+        self.assertIn("সিপিইউ", lines[0])
 
 
 if __name__ == "__main__":  # pragma: no cover

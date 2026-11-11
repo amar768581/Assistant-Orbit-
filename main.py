@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import importlib.util
 import json
 import logging
 import platform
@@ -50,6 +51,33 @@ from voice_engine import VoiceEngine
 
 log = logging.getLogger("orbit.main")
 
+ORBIT_HOME = Path.home() / ".orbit"
+LOG_PATH = ORBIT_HOME / "orbit.log"
+
+
+def configure_logging(level: int = logging.INFO) -> Path:
+    """Send logs to ``~/.orbit/orbit.log`` (cross-platform) and the console."""
+    ORBIT_HOME.mkdir(parents=True, exist_ok=True)
+    formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    root = logging.getLogger()
+    root.setLevel(level)
+
+    if not any(isinstance(handler, logging.FileHandler) for handler in root.handlers):
+        file_handler = logging.FileHandler(LOG_PATH, encoding="utf-8")
+        file_handler.setFormatter(formatter)
+        root.addHandler(file_handler)
+
+    if not any(
+        isinstance(handler, logging.StreamHandler)
+        and not isinstance(handler, logging.FileHandler)
+        for handler in root.handlers
+    ):
+        stream_handler = logging.StreamHandler()
+        stream_handler.setFormatter(formatter)
+        root.addHandler(stream_handler)
+    return LOG_PATH
+
+
 SERVICE_NAMES_BN: Dict[str, str] = {
     "battery": "ব্যাটারি",
     "reception": "রিসেপশনিস্ট",
@@ -59,16 +87,7 @@ SERVICE_NAMES_BN: Dict[str, str] = {
 }
 DEFAULT_SERVICES: Sequence[str] = ("battery", "reception", "notifications", "daily", "telegram")
 
-TERMUX_BINARIES = (
-    "termux-battery-status",
-    "termux-notification-list",
-    "termux-tts-speak",
-    "termux-camera-photo",
-    "termux-location",
-    "termux-telephony-call",
-    "termux-sms-send",
-    "termux-wake-lock",
-)
+# Phone control (ADB) is optional on a PC; the assistant runs without it.
 
 GOODBYE_WORDS = ("exit", "quit", "/quit", "bye", "বিদায়", "বন্ধ")
 
@@ -78,50 +97,68 @@ GOODBYE_WORDS = ("exit", "quit", "/quit", "bye", "বিদায়", "বন�
 # --------------------------------------------------------------------------- #
 
 class WakeLock:
-    """Idempotent ``termux-wake-lock`` / ``termux-wake-unlock`` wrapper."""
+    """Keep the PC awake while the daemon runs (Termux wake-lock successor).
+
+    Windows uses ``SetThreadExecutionState``; other platforms are a harmless
+    no-op so development and CI on Linux still work.
+    """
+
+    ES_CONTINUOUS = 0x80000000
+    ES_SYSTEM_REQUIRED = 0x00000001
 
     def __init__(
         self,
         settings: Optional[Any] = None,
-        runner: Callable[..., CommandResult] = run_command,
+        runner: Any = None,
+        platform_name: Optional[str] = None,
     ) -> None:
         self.settings = settings or default_settings
-        self._runner = runner
+        self.platform_name = platform_name or platform.system()
         self.held = False
 
-    def _run(self, command: str) -> Dict[str, Any]:
-        try:
-            try:
-                result = self._runner([command], 15)
-            except TypeError:  # a runner that only takes the command
-                result = self._runner([command])
-        except Exception as exc:
-            return {"ok": False, "error": str(exc)}
-        if result.ok:
-            return {"ok": True, "detail": command}
-        return {"ok": False, "error": result.describe()}
+    @property
+    def is_windows(self) -> bool:
+        return str(self.platform_name).lower().startswith("win")
+
+    def _set_execution_state(self, flags: int) -> None:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        if not kernel32.SetThreadExecutionState(flags):
+            raise OSError("SetThreadExecutionState failed")
 
     def acquire(self) -> Dict[str, Any]:
         if not getattr(self.settings, "wake_lock", True):
             return {"ok": True, "skipped": "WAKE_LOCK=false"}
         if self.held:
             return {"ok": True, "skipped": "already held"}
-        result = self._run("termux-wake-lock")
-        self.held = bool(result.get("ok"))
-        if self.held:
-            log.info("Wake-lock acquired")
-        else:
-            log.warning("Wake-lock failed: %s", result.get("error"))
-        return result
+        if not self.is_windows:
+            self.held = True
+            return {
+                "ok": True,
+                "skipped": f"not required on {self.platform_name}",
+                "detail": "no-op",
+            }
+        try:
+            self._set_execution_state(self.ES_CONTINUOUS | self.ES_SYSTEM_REQUIRED)
+            self.held = True
+            log.info("Wake-lock acquired (SetThreadExecutionState)")
+            return {"ok": True, "detail": "SetThreadExecutionState"}
+        except Exception as exc:
+            log.warning("Wake-lock failed: %s", exc)
+            return {"ok": False, "error": str(exc)}
 
     def release(self) -> Dict[str, Any]:
         if not self.held:
             return {"ok": True, "skipped": "not held"}
-        result = self._run("termux-wake-unlock")
-        if result.get("ok"):
+        try:
+            if self.is_windows:
+                self._set_execution_state(self.ES_CONTINUOUS)
             self.held = False
             log.info("Wake-lock released")
-        return result
+            return {"ok": True, "detail": "released"}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
 
 
 # --------------------------------------------------------------------------- #
@@ -261,6 +298,10 @@ class OrbitDaemon:
             if service is None:
                 continue
             if service.running:
+                continue
+            if name in ("reception", "notifications") and platform.system().lower().startswith("win"):
+                skipped[name] = "Android-only service — disabled on this PC"
+                log.info("Service skipped: %s", skipped[name])
                 continue
             if name == "telegram" and not getattr(self.settings, "telegram_ready", False):
                 skipped[name] = "TELEGRAM_BOT_TOKEN / ADMIN_CHAT_ID missing"
@@ -517,8 +558,9 @@ def doctor_report(
     memory: Any = None,
     runner: Callable[..., CommandResult] = run_command,
     which: Callable[[str], Optional[str]] = which_binary,
+    pc: Any = None,
 ) -> Dict[str, Any]:
-    """Readiness table: keys, DB, Termux:API, ADB, wake-lock."""
+    """Readiness table: keys, DB, PC health, audio, Telegram, guardrail."""
     settings = settings or default_settings
     rows: List[Dict[str, str]] = []
 
@@ -569,25 +611,62 @@ def doctor_report(
     lock = security_report()
     row("Banking Security Lock", lock["label_bn"], "ok" if lock.get("enabled") else "fail")
 
-    for binary in TERMUX_BINARIES:
-        found = bool(which(binary))
-        row(binary, "পাওয়া গেছে" if found else "নেই (pkg install termux-api)",
-            "ok" if found else "warn")
+    is_windows = platform.system().lower().startswith("win")
+    row("Windows", f"{platform.system()} {platform.release()}", "ok" if is_windows else "warn")
 
-    adb_state, adb_value = "warn", "adb নেই"
+    pc_tool = pc
+    if pc_tool is None:
+        try:
+            from pc_automation import PcAutomation
+
+            pc_tool = PcAutomation(settings=settings)
+        except Exception:
+            pc_tool = None
+    health: Dict[str, Any] = {}
+    if pc_tool is not None:
+        try:
+            health = pc_tool.system_health()
+        except Exception as exc:
+            health = {"ok": False, "error": str(exc)}
+    if health.get("ok"):
+        row(
+            "PC Health",
+            f"CPU {health.get('cpu_percent')}% · RAM {health.get('ram_percent')}% · "
+            f"ডিস্ক {health.get('disk_free_gb')} জিবি খালি",
+            "ok",
+        )
+    else:
+        row("PC Health", str(health.get("error") or "psutil নেই (pip install psutil)")[:80], "warn")
+
+    audio_ok = bool(importlib.util.find_spec("edge_tts")) and bool(
+        importlib.util.find_spec("pygame")
+    )
+    row(
+        "Voice (edge-tts+pygame)",
+        "প্রস্তুত" if audio_ok else "pip install edge-tts pygame",
+        "ok" if audio_ok else "warn",
+    )
+    mic_ok = bool(importlib.util.find_spec("sounddevice"))
+    row(
+        "Microphone",
+        "প্রস্তুত" if mic_ok else "pip install sounddevice soundfile",
+        "ok" if mic_ok else "warn",
+    )
+
+    adb_state, adb_value = "warn", "adb নেই (ফোন কন্ট্রোল ঐচ্ছিক)"
     try:
         result = runner(["adb", "devices"], 10)
         output = result.output or ""
         devices = [line for line in output.splitlines() if "\tdevice" in line]
         if result.ok and devices:
-            adb_state, adb_value = "ok", f"{len(devices)}টি ডিভাইস সংযুক্ত"
+            adb_state, adb_value = "ok", f"{len(devices)}টি ফোন সংযুক্ত"
         elif result.ok:
-            adb_state, adb_value = "warn", "ডিভাইস সংযুক্ত নয় (Wireless debugging pairing করুন)"
+            adb_state, adb_value = "warn", "ফোন সংযুক্ত নয় (ঐচ্ছিক)"
         else:
             adb_value = result.describe()[:80]
     except Exception as exc:
         adb_value = str(exc)[:80]
-    row("ADB", adb_value, adb_state)
+    row("ADB (optional phone)", adb_value, adb_state)
 
     has_ai = bool(getattr(settings, "gemini_api_key", "") or getattr(settings, "groq_api_key", ""))
     memory_row = next((r for r in rows if r["label"] == "SQLite মেমোরি"), None)
@@ -616,9 +695,11 @@ def print_doctor(report: Dict[str, Any], out: Callable[[str], None] = print) -> 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="orbit",
-        description="Orbit — বাংলা ব্যক্তিগত AI সহকারী (Termux)",
+        description="Orbit — বাংলা ব্যক্তিগত AI সহকারী (Windows PC)",
     )
     sub = parser.add_subparsers(dest="command")
+
+    sub.add_parser("chat", help="ইন্টারঅ্যাকটিভ চ্যাট (ডিফল্ট)")
 
     daemon = sub.add_parser("daemon", help="সব সার্ভিস + CLI চালু করুন")
     daemon.add_argument("--no-cli", action="store_true", help="শুধু ব্যাকগ্রাউন্ড সার্ভিস (headless)")
@@ -632,6 +713,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("briefing", help="আজকের বাজার ও বিশ্ব খবর")
 
+    sub.add_parser("health", help="সিপিইউ, র‍্যাম, ডিস্ক ও ব্যাটারি দেখুন")
+
     doctor = sub.add_parser("doctor", help="পরিবেশ পরীক্ষা করুন")
     doctor.add_argument("--strict", action="store_true", help="প্রস্তুত না হলে exit 1")
 
@@ -641,9 +724,13 @@ def build_parser() -> argparse.ArgumentParser:
 def _with_default_command(argv: Optional[Sequence[str]]) -> List[str]:
     args = list(argv if argv is not None else sys.argv[1:])
     if not args:
-        return ["daemon"]
-    if args[0] not in ("daemon", "once", "voice", "briefing", "doctor", "-h", "--help"):
-        return ["daemon", *args]
+        return ["chat"]
+    known = (
+        "chat", "daemon", "once", "voice", "briefing", "health", "doctor",
+        "-h", "--help",
+    )
+    if args[0] not in known:
+        return ["once", *args]
     return args
 
 
@@ -690,6 +777,15 @@ def main(
         except Exception as exc:
             log.warning("TTS failed: %s", exc)
         return 0 if result.get("ok") else 1
+
+    if command == "health":
+        health = instance.control.system_health()
+        out(str(health.get("summary_bn") or health.get("error") or "বস, স্বাস্থ্য তথ্য পাওয়া গেল না।"))
+        return 0 if health.get("ok") else 1
+
+    if command == "chat":
+        interactive_loop(instance.dispatcher, writer=out, stop_event=stop_event)
+        return 0
 
     if command == "briefing":
         result = instance.briefing.market_news()
@@ -741,5 +837,5 @@ def main(
 
 
 if __name__ == "__main__":  # pragma: no cover
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    configure_logging()
     raise SystemExit(main())

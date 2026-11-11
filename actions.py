@@ -33,6 +33,7 @@ from briefing_agent import BriefingAgent
 from call_receptionist import CallReceptionist
 from comm_manager import CommManager
 from config import settings as default_settings
+from pc_automation import PcAutomation
 from security_guard import SecurityGuard
 from system_control import SystemControl
 
@@ -49,6 +50,9 @@ ACTION_NAMES_BN: Dict[str, str] = {
     "wifi": "ওয়াই-ফাই",
     "intruder_check": "ঘরের চেক",
     "open_app": "অ্যাপ খোলা",
+    "open_website": "ওয়েবসাইট খোলা",
+    "open_folder": "ফোল্ডার খোলা",
+    "pc_health": "কম্পিউটারের স্বাস্থ্য",
     "read_screen": "স্ক্রিন পড়া",
     "market_news": "বাজার ও খবর",
     "speak": "বলা",
@@ -68,6 +72,7 @@ class ActionDispatcher:
         briefing: Optional[BriefingAgent] = None,
         security: Optional[SecurityGuard] = None,
         receptionist: Optional[CallReceptionist] = None,
+        pc: Optional[PcAutomation] = None,
         brain: Any = None,
         voice: Any = None,
         memory: Any = None,
@@ -78,6 +83,7 @@ class ActionDispatcher:
     ) -> None:
         self.settings = settings or default_settings
         self.control = control or SystemControl(settings=self.settings)
+        self.pc = pc or PcAutomation(settings=self.settings)
         self.comm = comm or CommManager(control=self.control, settings=self.settings)
         self.adb = adb or AdbAutomation(control=self.control, settings=self.settings)
         self.briefing = briefing or BriefingAgent(settings=self.settings)
@@ -167,7 +173,19 @@ class ActionDispatcher:
         return self.security.intruder_check(capture=bool(params.get("capture", True)))
 
     def _open_app(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        return self.adb.open_app(params.get("app") or params.get("app_name") or "")
+        return self.pc.open_app(params.get("app") or params.get("app_name") or "")
+
+    def _open_website(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        return self.pc.open_website(params.get("url") or params.get("website") or "")
+
+    def _open_folder(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        return self.pc.open_folder(params.get("path") or params.get("folder") or "")
+
+    def _pc_health(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        health = self.pc.system_health()
+        if health.get("ok") and not health.get("reply_bn"):
+            health["reply_bn"] = health.get("summary_bn")
+        return health
 
     def _read_screen(self, params: Dict[str, Any]) -> Dict[str, Any]:
         return self.adb.read_screen(prompt_bn=params.get("prompt_bn") or "স্ক্রিনে কী আছে সংক্ষেপে বলো")
@@ -198,6 +216,9 @@ class ActionDispatcher:
             "wifi": self._wifi,
             "intruder_check": self._intruder_check,
             "open_app": self._open_app,
+            "open_website": self._open_website,
+            "open_folder": self._open_folder,
+            "pc_health": self._pc_health,
             "read_screen": self._read_screen,
             "market_news": self._market_news,
             "speak": self._speak_action,

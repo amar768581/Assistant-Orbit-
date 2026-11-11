@@ -78,6 +78,9 @@ SUPPORTED_ACTIONS: Sequence[str] = (
     "wifi",
     "intruder_check",
     "open_app",
+    "open_website",
+    "open_folder",
+    "pc_health",
     "read_screen",
     "market_news",
     "speak",
@@ -98,7 +101,10 @@ ACTION_SPECS: Dict[str, Dict[str, str]] = {
     },
     "wifi": {"state": "'on' or 'off'"},
     "intruder_check": {"capture": "true to silently take a photo, else false"},
-    "open_app": {"app": "app name, e.g. 'YouTube', 'ক্যামেরা'"},
+    "open_app": {"app": "desktop app name, e.g. 'notepad', 'chrome'"},
+    "open_website": {"url": "website to open in the default browser"},
+    "open_folder": {"path": "local folder path, e.g. '~/Downloads'"},
+    "pc_health": {"note": "no params — CPU, RAM, disk and battery"},
     "read_screen": {"note": "no params — read what is on screen aloud"},
     "market_news": {"topic": "'crypto' | 'stocks' | 'general' (optional)"},
     "speak": {"text": "the answer to say out loud, in Bengali"},
@@ -132,6 +138,21 @@ ACTION_ALIASES: Dict[str, str] = {
     "security_check": "intruder_check",
     "launch_app": "open_app",
     "openapp": "open_app",
+    "open_program": "open_app",
+    "launch_program": "open_app",
+    "browse": "open_website",
+    "open_url": "open_website",
+    "website": "open_website",
+    "open_site": "open_website",
+    "open_directory": "open_folder",
+    "open_path": "open_folder",
+    "folder": "open_folder",
+    "explorer": "open_folder",
+    "health": "pc_health",
+    "pc_status": "pc_health",
+    "system_health": "pc_health",
+    "system_stats": "pc_health",
+    "computer_status": "pc_health",
     "screenshot": "read_screen",
     "readscreen": "read_screen",
     "screen": "read_screen",
@@ -157,6 +178,9 @@ DEFAULT_REPLIES: Dict[str, str] = {
     "wifi": "ওয়াইফাই নিয়ন্ত্রণ করছি।",
     "intruder_check": "ঘরের চারপাশ চেক করছি।",
     "open_app": "অ্যাপ খুলছি।",
+    "open_website": "ওয়েবসাইট খুলছি।",
+    "open_folder": "ফোল্ডার খুলছি।",
+    "pc_health": "কম্পিউটারের অবস্থা দেখছি।",
     "read_screen": "স্ক্রিন পড়ছি।",
     "market_news": "বাজার ও খবর দেখছি।",
     "speak": "বলছি।",
@@ -167,7 +191,7 @@ FAILURE_REPLY = "বস, দুঃখিত, আমি এখন ঠিকমত
 # ORBIT never speaks to its owner without this word (see ``_boss_guard``).
 BOSS_ADDRESS = "বস"
 
-SYSTEM_PROMPT = """You are ORBIT, a Bengali-first personal AI assistant running on the user's Android phone through Termux.
+SYSTEM_PROMPT = """You are ORBIT, a Bengali-first personal AI assistant running on the user's Windows PC.
 The user speaks Bengali, English, or Banglish (Bengali written in Latin letters).
 
 ALWAYS answer with ONE JSON object and nothing else — no markdown, no prose outside the JSON:
@@ -183,7 +207,10 @@ ACTIONS AND PARAMS
 - volume          {"level": 0-100}   or   {"direction": "up" | "down" | "mute" | "unmute"}
 - wifi            {"state": "on" | "off"}
 - intruder_check  {"capture": true | false}            (silent photo of an intruder)
-- open_app        {"app": "<installed app name>"}
+- open_app        {"app": "<desktop app, e.g. notepad / chrome>"}
+- open_website    {"url": "<https://...>"}              (default browser)
+- open_folder     {"path": "<~/Downloads or C:\\Users\\...>"}
+- pc_health       {}                                   (CPU, RAM, disk, battery)
 - read_screen     {}                                   (read the current screen aloud)
 - market_news     {"topic": "crypto" | "stocks" | "general"}
 - speak           {"text": "<answer to say out loud>"}  (chat, questions, anything not device control)
@@ -200,7 +227,7 @@ THINKER CATALYST
 - Do not add the catalyst to simple device commands (torch, volume, calls).
 
 RULES
-1. reply_bn is ALWAYS in Bengali script, natural and conversational, 4-20 words — that is what the phone speaks.
+1. reply_bn is ALWAYS in Bengali script, natural and conversational, 4-20 words — that is what the assistant speaks.
 2. If the request is a question, chit-chat, or general knowledge, use "speak" and put the full answer in params.text AND a short version in reply_bn.
 3. Never invent phone numbers, contacts, or app names that the user did not mention.
 4. One intent per reply. If several are asked, do the first one and mention it in reply_bn.
@@ -529,6 +556,21 @@ def _normalise_params(action: str, params: Any) -> Dict[str, Any]:
         if app:
             clean["app"] = app
 
+    elif action == "open_website":
+        url = _clean_text(params.get("url") or params.get("website") or params.get("link"))
+        if url:
+            clean["url"] = url
+
+    elif action == "open_folder":
+        folder = _clean_text(
+            params.get("path") or params.get("folder") or params.get("directory")
+        )
+        if folder:
+            clean["path"] = folder
+
+    elif action == "pc_health":
+        clean = {}
+
     elif action == "market_news":
         topic = _clean_text(params.get("topic")).lower()
         clean["topic"] = topic if topic in ("crypto", "stocks", "general") else "general"
@@ -548,6 +590,15 @@ def _financial_refusal(action: str, params: Dict[str, Any], user_text: str) -> O
     """Return a Bengali refusal when a decision tries to touch money or secrets."""
     if action == "open_app":
         target = _clean_text(params.get("app") or params.get("name") or params.get("package"))
+        if is_financial_target(target):
+            return BANKING_REFUSAL_BN
+        if contains_secret(user_text):
+            return SECRET_REFUSAL_BN
+        if is_financial_request(user_text):
+            return BANKING_REFUSAL_BN
+
+    if action == "open_website":
+        target = _clean_text(params.get("url") or params.get("website") or params.get("link"))
         if is_financial_target(target):
             return BANKING_REFUSAL_BN
         if contains_secret(user_text):
@@ -589,6 +640,12 @@ def validate_decision(obj: Dict[str, Any], user_text: str = "") -> Dict[str, Any
     if action == "open_app" and not params.get("app"):
         action, params = "speak", {}
         reply = reply or "কোন অ্যাপটা খুলব বলবেন?"
+    if action == "open_website" and not params.get("url"):
+        action, params = "speak", {}
+        reply = reply or "কোন ওয়েবসাইট খুলব, লিংকটা বলবেন?"
+    if action == "open_folder" and not params.get("path"):
+        action, params = "speak", {}
+        reply = reply or "কোন ফোল্ডারটা খুলব, পাথটা বলবেন?"
 
     # Non-bypassable financial guard: a model cannot open a bank app, type a
     # PIN/OTP/password, or send one over SMS/WhatsApp even if it tries.
